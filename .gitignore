@@ -1,0 +1,21 @@
+# Local and generated artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.log
+*.zip
+*.safetensors
+*.pt
+*.pth
+*.bin
+
+# Data and model outputs
+train.csv
+submission.zip
+output_adapter/
+output_adapter_best/
+
+# Local environments and tool state
+.venv/
+.claude/
+.agents/
