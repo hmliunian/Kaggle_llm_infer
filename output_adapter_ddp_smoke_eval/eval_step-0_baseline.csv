@@ -1,0 +1,21 @@
+sample_index,step_label,family,correct,has_boxed_answer,gold,pred,prompt,decoded
+0,step=0 (baseline),unit_conversion,False,True,39.00,38.36,"In Alice's Wonderland, a secret unit conversion is applied to measurements. For example:
+14.06 m becomes 18.01
+24.54 m becomes 31.43
+24.45 m becomes 31.32
+Now, convert the following measurement: 30.45 m","</think>
+The final answer is \boxed{38.36}"
+1,step=0 (baseline),bit_manipulation,False,False,00001110,,"In Alice's Wonderland, a secret bit manipulation rule transforms 8-bit binary numbers. The transformation involves operations like bit shifts, rotations, XOR, AND, OR, NOT, and possibly majority or choice functions.
+
+Here are some examples of input -> output:
+11110000 -> 10001111
+11000111 -> 11111100
+00101000 -> 11101011
+10100010 -> 11101110
+11000100 -> 00011101
+01001010 -> 10011110
+10001110 -> 01111000
+00010011 -> 00010111
+
+Now, determine the output for: 01101110","</think>
+The final answer is \boxed{11101110"

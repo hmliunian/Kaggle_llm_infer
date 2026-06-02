@@ -1,0 +1,29 @@
+{
+  "step_label": "step=0 (baseline)",
+  "val_size": 947,
+  "max_samples": 2,
+  "evaluated_samples": 2,
+  "max_new_tokens": 8,
+  "correct": 0,
+  "accuracy": 0.0,
+  "boxed_count": 1,
+  "boxed_rate": 0.5,
+  "family_summary": {
+    "bit_manipulation": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0,
+      "boxed_count": 0,
+      "boxed_rate": 0.0
+    },
+    "unit_conversion": {
+      "correct": 0,
+      "total": 1,
+      "accuracy": 0.0,
+      "boxed_count": 1,
+      "boxed_rate": 1.0
+    }
+  },
+  "details_jsonl": "/data2/yaoxuran/llm_infer/output_adapter_ddp_smoke_eval/eval_step-0_baseline.jsonl",
+  "details_csv": "/data2/yaoxuran/llm_infer/output_adapter_ddp_smoke_eval/eval_step-0_baseline.csv"
+}

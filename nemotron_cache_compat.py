@@ -8,6 +8,17 @@ import sys
 import torch
 
 
+class _StateList(list):
+    @property
+    def device(self):
+        for tensor in self:
+            if getattr(tensor, "numel", lambda: 0)() > 0:
+                return tensor.device
+        if self:
+            return self[0].device
+        return torch.device("cpu")
+
+
 def patch_nemotron_h_cache_compat(model) -> bool:
     """Patch the loaded Nemotron-H module so generate() can use cache correctly.
 
@@ -27,6 +38,7 @@ def patch_nemotron_h_cache_compat(model) -> bool:
     if not getattr(cache_cls, "_llm_infer_cache_patch", False):
         _patch_cache_class(cache_cls)
 
+    _patch_model_module(module)
     _patch_model_generation(target_model)
     return True
 
@@ -62,6 +74,8 @@ def _patch_cache_class(cache_cls):
     @functools.wraps(orig_init)
     def patched_init(self, config, batch_size, dtype=torch.float16, device=None):
         orig_init(self, config, batch_size, dtype=dtype, device=device)
+        self.conv_states = _StateList(self.conv_states)
+        self.ssm_states = _StateList(self.ssm_states)
 
         intermediate_size = config.mamba_num_heads * config.mamba_head_dim
         conv_dim = intermediate_size + 2 * config.n_groups * config.ssm_state_size
@@ -94,14 +108,17 @@ def _patch_cache_class(cache_cls):
     def patched_get_seq_length(self, layer_idx: int = 0) -> int:
         if len(self.key_cache) == 0:
             return 0
-        if layer_idx not in self.transformer_layers and self.transformer_layers:
-            layer_idx = self.transformer_layers[0]
-        if layer_idx >= len(self.key_cache):
-            return 0
-        cache = self.key_cache[layer_idx]
-        if cache.numel() == 0 or cache.shape[-1] == 0:
-            return 0
-        return cache.shape[-2]
+
+        candidate_layers = []
+        if layer_idx is not None and 0 <= layer_idx < len(self.key_cache):
+            candidate_layers.append(layer_idx)
+        candidate_layers.extend(i for i in range(len(self.key_cache)) if i not in candidate_layers)
+
+        for candidate_layer in candidate_layers:
+            cache = self.key_cache[candidate_layer]
+            if cache.numel() > 0 and cache.shape[-1] != 0:
+                return cache.shape[-2]
+        return 0
 
     cache_cls.__init__ = patched_init
     cache_cls.update_conv_state = patched_update_conv_state
@@ -110,6 +127,149 @@ def _patch_cache_class(cache_cls):
     cache_cls._llm_infer_orig_init = orig_init
     cache_cls._llm_infer_orig_update_conv_state = orig_update_conv_state
     cache_cls._llm_infer_orig_get_seq_length = orig_get_seq_length
+
+
+def _patch_model_module(module):
+    block_cls = getattr(module, "NemotronHBlock", None)
+    if block_cls is not None and not getattr(block_cls, "_llm_infer_block_patch", False):
+        _patch_block_class(block_cls)
+
+    moe_cls = getattr(module, "NemotronHMOE", None)
+    if moe_cls is not None and not getattr(moe_cls, "_llm_infer_moe_patch", False):
+        _patch_moe_class(moe_cls)
+
+    causal_lm_cls = getattr(module, "NemotronHForCausalLM", None)
+    if causal_lm_cls is not None and not getattr(causal_lm_cls, "_llm_infer_logits_patch", False):
+        _patch_causal_lm_class(causal_lm_cls, module)
+
+
+def _patch_block_class(block_cls):
+    orig_forward = block_cls.forward
+
+    @functools.wraps(orig_forward)
+    def patched_forward(self, hidden_states, cache_params=None, cache_position=None, attention_mask=None):
+        with torch.cuda.stream(torch.cuda.default_stream(hidden_states.device)):
+            residual = hidden_states
+            hidden_states = self.norm(hidden_states.to(dtype=self.norm.weight.dtype))
+            if self.residual_in_fp32:
+                residual = residual.to(torch.float32)
+
+            if self.block_type == "mamba":
+                hidden_states = self.mixer(
+                    hidden_states, cache_params=cache_params, cache_position=cache_position
+                )
+            elif self.block_type == "attention":
+                hidden_states = self.mixer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    past_key_value=cache_params,
+                    cache_position=cache_position,
+                    use_cache=cache_params is not None,
+                )[0]
+            elif self.block_type in ["mlp", "moe"]:
+                hidden_states = self.mixer(hidden_states)
+            else:
+                raise ValueError(f"Invalid block_type: {self.block_type}")
+
+            return residual + hidden_states
+
+    block_cls.forward = patched_forward
+    block_cls._llm_infer_block_patch = True
+    block_cls._llm_infer_orig_forward = orig_forward
+
+
+def _patch_moe_class(moe_cls):
+    orig_moe = moe_cls.moe
+
+    def patched_moe(self, hidden_states: torch.Tensor, topk_indices: torch.Tensor, topk_weights: torch.Tensor):
+        final_hidden_states = torch.zeros_like(hidden_states, dtype=topk_weights.dtype)
+        active_experts = torch.unique(topk_indices).tolist()
+
+        for expert_idx in active_experts:
+            token_indices, weight_indices = torch.where(topk_indices == expert_idx)
+            if token_indices.numel() == 0:
+                continue
+
+            expert_output = self.experts[expert_idx](hidden_states[token_indices])
+            expert_weights = topk_weights[token_indices, weight_indices].unsqueeze(-1)
+            final_hidden_states.index_add_(0, token_indices, expert_output * expert_weights)
+
+        return final_hidden_states.to(hidden_states.dtype)
+
+    moe_cls.moe = patched_moe
+    moe_cls._llm_infer_moe_patch = True
+    moe_cls._llm_infer_orig_moe = orig_moe
+
+
+def _patch_causal_lm_class(causal_lm_cls, module):
+    output_cls = getattr(module, "NemotronHCausalLMOutput")
+    orig_forward = causal_lm_cls.forward
+
+    @functools.wraps(orig_forward)
+    def patched_forward(
+        self,
+        input_ids=None,
+        inputs_embeds=None,
+        position_ids=None,
+        cache_params=None,
+        labels=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+        use_cache=None,
+        cache_position=None,
+        attention_mask=None,
+        **kwargs,
+    ):
+        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+        output_hidden_states = (
+            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        )
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.backbone(
+            input_ids,
+            cache_params=cache_params,
+            inputs_embeds=inputs_embeds,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            attention_mask=attention_mask,
+        )
+        hidden_states = outputs[0]
+
+        logits_hidden_states = hidden_states
+        logits_to_keep = kwargs.get("logits_to_keep", None)
+        if labels is None and logits_to_keep is not None and logits_to_keep != 0:
+            logits_hidden_states = hidden_states[:, -int(logits_to_keep):, :]
+
+        logits = self.lm_head(logits_hidden_states.to(self.lm_head.weight.dtype)).float()
+
+        loss = None
+        if labels is not None:
+            labels = labels.to(logits.device)
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = labels[..., 1:].contiguous()
+            loss_fct = module.CrossEntropyLoss()
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return ((loss,) + output) if loss is not None else output
+
+        return output_cls(
+            loss=loss,
+            logits=logits,
+            cache_params=outputs.cache_params,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+    causal_lm_cls.forward = patched_forward
+    causal_lm_cls._llm_infer_logits_patch = True
+    causal_lm_cls._llm_infer_orig_forward = orig_forward
 
 
 def _patch_model_generation(model):
