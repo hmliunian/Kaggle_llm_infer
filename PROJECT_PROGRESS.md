@@ -1,6 +1,6 @@
 # Nemotron SFT Project Progress
 
-Last updated: 2026-06-02 17:10:29 CST
+Last updated: 2026-06-03 10:59:00 CST
 
 | Stage | Status | Evidence | Next action |
 | --- | --- | --- | --- |
@@ -8,13 +8,59 @@ Last updated: 2026-06-02 17:10:29 CST
 | M2 Tokenizer + SFT formatting | Done | `train_sft.py` loads tokenizer and prints formatted examples. | Keep prompt/answer format stable. |
 | M3 Smoke training/package | Done | Smoke run on 2026-06-01 completed training, save, and zip packaging. | Scale up to a longer run. |
 | M4 Local validation | Done | Smoke run evaluated 2 validation samples before and during training; generation no longer blocks. | Expand validation sample count for a broader check. |
-| M5 Full SFT baseline | In progress | Rank32 20-step baseline completed, rank16 20-step baseline completed, and rank16 `NUM_EPOCHS=1` formal run is live on GPU 6 (`PID 2739700`). Currently around optimizer step 120/535 and batch 960/4277. Speed is ~4.8-5.1 s/batch, ~39-41 s/optimizer step including eval overhead. GPU 6: ~76 GB / 81 GB. | Continue to epoch end; estimated training finish around 22:10-22:15 CST, final zip around 22:20-22:35 CST. |
-| M6 Synthetic data | Retraining | `generate_synthetic_data.py` produced verified `data/synthetic_v1.csv` (6,000 rows, 1,000/family), `data/synthetic_v1_metadata.jsonl`, `data/synthetic_v1_report.json`, and `data/train_plus_synthetic_v1.csv` (15,500 rows total). Old synthetic-mix SFT completed at `MAX_TRAIN_STEPS=1100`; adapter: `runs/synthetic_v1_13h/adapter_best`; zip: `runs/synthetic_v1_13h/artifacts/submission.zip`. Old-format 100-sample eval: `11/100` accuracy and `11/100` boxed rate. Fixed-format eval on the same adapter: `29/100` accuracy and `100/100` boxed rate. | Run a new synthetic SFT with response-only loss plus final-answer prefill/boxed stop, then evaluate on 100+ samples. |
+| M5 Full SFT baseline | Archived | Earlier smoke/mini/baseline/rank test artifacts were removed on 2026-06-02 to avoid mixing old-code results with the current response-only/DDP runs. | No action unless a fresh non-synthetic baseline is needed. |
+| M6 Synthetic data | Running | `synthetic_v1` produced 6,000 rows but later validation found solvability bugs. `synthetic_v2` fixed visibility/numeric consistency and powers the current no-brace v2 DDP run. As of 2026-06-03 10:50 CST, that run is still live on GPUs 5/6 and reached step-1900 eval at `51/100` accuracy with `100/100` boxed rate. A new `synthetic_v3` dataset has been generated with weak-family upweighting and brace-safe answer support: `data/synthetic_v3.csv`, `data/synthetic_v3_metadata.jsonl`, `data/synthetic_v3_report.json`, and `data/train_plus_synthetic_v3.csv`. | Let the current v2 run continue until the next decision point, then start a short v3 warm-start experiment using the updated brace-safe `train_sft.py`. |
 | M7 RLVR/GRPO | Not started | No RL pipeline found. | Defer. |
 
 ## Active Issue
 
-Synthetic v1 eval accuracy is low because most generations do not reach a final boxed answer. On the 100-sample eval, only 11/100 outputs contained a complete `\boxed{...}` answer, and all 11 boxed predictions were correct. The other 89 samples were unboxed/truncated, so the main failure mode is output format and generation length rather than wrong answers inside boxed outputs. The previous Nemotron-H generation cache issue remains covered by the `use_cache=False` fallback, and the gradient-checkpointing/evaluation interaction has been fixed.
+The format issue has mostly been fixed: response-only loss, final-answer prefill, and stop-after-boxed generation moved boxed rate to `100/100` on both the old adapter fixed-format eval and the current step-100 eval. The active issue is now data quality and task solvability. `synthetic_v1` contains a systematic `equation_symbol_transformation` bug where many final-query symbols are never shown in the example inputs, making the mapping impossible to infer. `synthetic_v2` fixes this and also aligns displayed numeric inputs with computed numeric answers.
+
+Current recommendation: use `data/train_plus_synthetic_v2_no_brace_answers.csv` for the current boxed-format formal training. The live v1 run has been stopped after preserving step-100 artifacts; use its results only as a short trend probe and do not treat v1 `equation_symbol_transformation` scores as a clean undertraining signal. Do not continue the unfiltered `data/train_plus_synthetic_v2.csv` run until brace-safe boxed formatting, stopping, extraction, and unescaping are implemented.
+
+Brace-answer handling note: `data/train_plus_synthetic_v2.csv` still contains `173` official `equation_symbol_transformation` rows whose gold answers include `{` or `}`. These rows are not from `synthetic_v2`, but the current `\boxed{answer}` format, `StopAfterBoxClose`, and `extract_boxed()` parser cannot safely represent or recover answers with internal braces. For the next clean v2 baseline, these official brace-answer rows should be filtered out rather than used as noisy supervision/eval. In a later data/code version, add them back by implementing brace-safe answer formatting, stopping, extraction, and unescaping.
+
+Current formal run:
+
+- Run root: `runs/synthetic_v2_no_brace_response_only_ddp_10000/`
+- Log: `runs/synthetic_v2_no_brace_response_only_ddp_10000/synthetic_v2_no_brace_response_only_ddp_10000.log`
+- PID file: `runs/synthetic_v2_no_brace_response_only_ddp_10000/synthetic_v2_no_brace_response_only_ddp_10000.pid`
+- W&B: `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft/runs/di0xzgvq`
+- Init adapter: none; this run starts clean from the base model with a new LoRA adapter.
+- Output adapter: `runs/synthetic_v2_no_brace_response_only_ddp_10000/adapter`
+- Checkpoints: `runs/synthetic_v2_no_brace_response_only_ddp_10000/checkpoints`, saved every 100 optimizer steps, keeping last 10.
+- Eval outputs: `runs/synthetic_v2_no_brace_response_only_ddp_10000/eval`
+- Main parameters: `MAX_TRAIN_STEPS=10000`, `NUM_EPOCHS=12`, `BATCH_SIZE=2`, `GRAD_ACCUM_STEPS=4`, `LORA_RANK=16`, `VAL_MAX_SAMPLES=100`, `EVAL_EVERY_STEPS=100`, `DISABLE_CUDNN_SDP=1`.
+
+Note: the no-brace v2 run intentionally does not resume from v1 adapters/checkpoints or the stopped unfiltered v2 attempt, because those data/run states are not clean baselines. New checkpoints from this run include optimizer/scheduler/global-step state and can be resumed with `RESUME_FROM_CHECKPOINT=latest`. Latest finished evals are saved under `runs/synthetic_v2_no_brace_response_only_ddp_10000/eval/`; best so far is `step-1900` with `51/100` accuracy and `100/100` boxed rate.
+
+GPU status at 2026-06-03 10:50 CST: there is no fully free H100. GPUs 5/6 are occupied by the live v2 DDP training processes (`train_sft.py`, about 79-80 GB each). GPUs 0/1 have about 65 GB free, and GPUs 2/3/4/7 have less free memory. The current single-card eval/training path usually needs roughly a full H100, so avoid launching another 30B eval on those partial cards unless model loading is changed to use multi-card sharding or lower-memory inference.
+
+## Synthetic v3 Data Fix
+
+Files:
+
+- Synthetic only: `data/synthetic_v3.csv`
+- Metadata: `data/synthetic_v3_metadata.jsonl`
+- Report: `data/synthetic_v3_report.json`
+- Combined train: `data/train_plus_synthetic_v3.csv`
+
+Generator/data changes:
+
+- `generate_synthetic_data.py` now defaults to `synthetic_v3`.
+- Added `--family-counts` so weak families can be upweighted without inflating already-solved tasks.
+- Default v3 synthetic counts are `bit_manipulation=3000`, `equation_symbol_transformation=3000`, `gravity_formula=3000`, `text_decryption=1500`, `numeral_system=500`, and `unit_conversion=500`.
+- `bit_manipulation` now uses a canonical, uniquely identifiable XOR/rotation/bit-reversal rule space and validates that the example set identifies exactly one rule in that candidate space.
+- `equation_symbol_transformation` now mixes character substitution with official-like numeric operator rules. Character substitution can include brace answers because `train_sft.py` now escapes boxed answers.
+- `gravity_formula` now uses more examples and sometimes includes simple anchor times to make hidden-`g` inference easier.
+- `train_sft.py` now uses brace-safe boxed answer escaping, stopping, extraction, and unescaping; eval summaries also include `source_summary` and `source_family_summary`.
+
+Validation/audit results:
+
+- `data/synthetic_v3.csv`: `11,500` synthetic rows.
+- `data/train_plus_synthetic_v3.csv`: `21,000` total rows, `9,500` official + `11,500` synthetic.
+- Combined family counts: `bit_manipulation=4602`, `equation_symbol_transformation=4555`, `gravity_formula=4597`, `text_decryption=3076`, `numeral_system=2076`, `unit_conversion=2094`.
+- v3 intentionally restores brace-answer coverage: `train_plus_synthetic_v3.csv` has `548` equation answers containing `{` or `}`. Use it only with the updated brace-safe `train_sft.py`; do not train it with older code.
 
 ## Synthetic v1 Eval Diagnosis
 
@@ -46,7 +92,37 @@ Recommended next actions:
 
 - Fixed eval inference now pre-fills `</think>\nThe final answer is \boxed{` and stops after the first generated `}`. On the old adapter this raised boxed rate from `11/100` to `100/100` and accuracy from `11/100` to `29/100`.
 - Fixed training now uses response-only loss by default, masking system/user prompt tokens and supervising only the assistant final-answer tokens.
-- Next run should retrain with these defaults and then re-evaluate on 100+ samples. Remaining hard families after format fixing are `equation_symbol_transformation` and `gravity_formula`, both still `0%` on the old adapter.
+- The current response-only DDP v1 run reached step-100 eval at `32/100` accuracy and `100/100` boxed rate. Family results: `numeral_system 13/16`, `unit_conversion 11/14`, `text_decryption 6/22`, `bit_manipulation 2/15`, `equation_symbol_transformation 0/17`, `gravity_formula 0/16`.
+- Step-100 details show errors are no longer caused by missing boxed answers. `gravity_formula` predictions are often numerically close but outside tolerance; `text_decryption` partially improves; `bit_manipulation` remains hard; `equation_symbol_transformation` is not cleanly interpretable because v1 has many impossible samples.
+- Next formal run should use `data/train_plus_synthetic_v2.csv` with the same response-only/final-answer settings.
+
+## Synthetic v2 Data Fix
+
+Files:
+
+- Synthetic only: `data/synthetic_v2.csv`
+- Metadata: `data/synthetic_v2_metadata.jsonl`
+- Report: `data/synthetic_v2_report.json`
+- Combined train: `data/train_plus_synthetic_v2.csv`
+- Current combined train, brace-answer rows removed: `data/train_plus_synthetic_v2_no_brace_answers.csv`
+- Filter report: `data/train_plus_synthetic_v2_no_brace_answers_report.json`
+
+Generator changes in `generate_synthetic_data.py`:
+
+- Added versioned output support; default version is now `synthetic_v2`.
+- Added built-in validation before writing files.
+- Fixed `equation_symbol_transformation` so every unique query character appears in at least one example input.
+- Fixed `text_decryption` so encrypted query characters, including those from `the`, are visible in encrypted examples.
+- Fixed `gravity_formula` and `unit_conversion` so displayed 1-decimal inputs are also the values used to compute displayed answers.
+
+Validation results:
+
+- `data/synthetic_v1.csv`: equation missing-visible-mapping `587/1000`; text missing-visible-mapping `3/1000`.
+- `data/train_plus_synthetic_v1.csv`: equation missing-visible-mapping `1545/2555`; text missing-visible-mapping `974/2576` by visibility heuristic, mostly from official/v1 mixed rows.
+- Current validation split from `train_plus_synthetic_v1.csv`: equation missing-visible-mapping `154/255`.
+- `data/synthetic_v2.csv`: equation missing-visible-mapping `0/1000`; text missing-visible-mapping `0/1000`; numeric display consistency errors `0`.
+- `data/train_plus_synthetic_v2.csv`: `15,500` rows total, source counts `official_train=9500`, `synthetic_v2=6000`; family counts remain balanced with `1000` synthetic rows per family.
+- Known combined-data caveat: `train_plus_synthetic_v2.csv` has `173` official `equation_symbol_transformation` answers containing `{` or `}` (`158` in train, `15` in val for the current split). The current run uses `train_plus_synthetic_v2_no_brace_answers.csv`, which removes these 173 rows and keeps 15,327 rows. Future version should restore them after adding brace-safe boxed parsing/formatting and a stop criterion that does not stop at an answer-internal `}`.
 
 ## Update Log
 
@@ -76,3 +152,27 @@ Recommended next actions:
 | 2026-06-02 16:58:40 CST | Patched `train_sft.py` and `eval_adapter.py`: added response-only SFT labels, final-answer prefill, and stop-after-boxed generation. Added README notes for the new flags. |
 | 2026-06-02 17:00:30 CST | Ran fixed-format eval on old `runs/synthetic_v1_13h/adapter_best`: `29/100` accuracy, `100/100` boxed rate. Family results: `numeral_system 15/16`, `unit_conversion 9/14`, `text_decryption 3/22`, `bit_manipulation 2/15`, `equation_symbol_transformation 0/17`, `gravity_formula 0/16`. |
 | 2026-06-02 17:10:29 CST | Smoke training with new response-only/final-answer format passed: 2 optimizer steps, checkpoints, final adapter, and `submission.zip` were saved successfully. |
+| 2026-06-02 18:36:00 CST | Added and smoke-tested DDP support in `train_sft.py`. Rank32 DDP smoke OOMed at optimizer step; rank16 DDP smoke passed 2 optimizer steps, checkpointing, final adapter save, and zip packaging. |
+| 2026-06-02 18:45:00 CST | Removed old-code or low-value artifacts: earlier smoke/mini/baseline/rank tests, old single-card W&B long run, empty long run, DDP smoke outputs, and root 2-step test checkpoints. Preserved `runs/synthetic_v1_13h/` for comparison and as adapter initialization. |
+| 2026-06-02 18:48:27 CST | Launched formal response-only DDP retraining on GPUs 5/6 from `runs/synthetic_v1_13h/adapter_best`. Run root: `runs/synthetic_v1_response_only_ddp_13h/`; PID: `797914`; W&B: `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft/runs/jwt02l7y`; checkpoint every 100 optimizer steps, keep last 3. |
+| 2026-06-02 18:49:00 CST | First DDP launch failed while loading old `adapter_best`: PEFT entered tensor-parallel adapter sharding after early distributed init and hit `ImportError: EmbeddingParallel` with the installed transformers version. Failed log preserved as `runs/synthetic_v1_response_only_ddp_13h/synthetic_v1_response_only_ddp_13h.failed_1848.log`. |
+| 2026-06-02 18:50:40 CST | Patched `train_sft.py` to delay `dist.init_process_group()` until after LoRA adapter loading, then verified `py_compile`. This avoids PEFT's incompatible TP-sharding path while preserving DDP training. |
+| 2026-06-02 18:52:30 CST | Relaunched formal response-only DDP run on GPUs 5/6. PID: `1008354`; W&B: `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft/runs/59qyyvuj`. The run loaded `runs/synthetic_v1_13h/adapter_best` successfully and entered `[7/8] Training`; GPU 5/6 memory was about 70 GB / 66 GB. |
+| 2026-06-02 18:54:30 CST | Confirmed the DDP run is computing: log reached optimizer step 3 with losses `1.7301 -> 1.5449 -> 1.3988`; GPU 5/6 memory was about 80 GB / 78 GB with nonzero utilization. |
+| 2026-06-02 19:19:01 CST | Stopped the short `runs/synthetic_v1_response_only_ddp_13h/` run by SIGTERM at optimizer step ~63. It had not reached `CHECKPOINT_EVERY_STEPS=100` or `EVAL_EVERY_STEPS=100`, so no useful checkpoint/eval was produced. |
+| 2026-06-02 19:20:44 CST | Started a fresh 10000-step response-only DDP run on GPUs 5/6 from `runs/synthetic_v1_13h/adapter_best`. Run root: `runs/synthetic_v1_response_only_ddp_10000/`; torchrun PID file: `runs/synthetic_v1_response_only_ddp_10000/synthetic_v1_response_only_ddp_10000.pid`; W&B: `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft/runs/13pk1w1w`; checkpoints/eval every 100 optimizer steps, keeping last 10 checkpoints. |
+| 2026-06-02 19:23:30 CST | Confirmed the 10000-step run entered `[7/8] Training`: log reached optimizer step 2, GPU 5/6 memory was about 79.6 GB / 78.1 GB, and the run reported `Total optimizer steps: 10476` with early stop at `MAX_TRAIN_STEPS=10000`. |
+| 2026-06-02 19:34:34 CST | The first 10000-step attempt failed at optimizer step ~29 in `loss.backward()` with `RuntimeError: Expected mha_graph.execute(...).is_good()`, not OOM. Failed log preserved as `runs/synthetic_v1_response_only_ddp_10000/synthetic_v1_response_only_ddp_10000.failed_mha_1934.log`. |
+| 2026-06-02 19:58:44 CST | Added `DISABLE_CUDNN_SDP` to `train_sft.py` and restarted the 10000-step run with `DISABLE_CUDNN_SDP=1`. New torchrun PID: `630931`; W&B: `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft/runs/ykl0u58e`; output root remains `runs/synthetic_v1_response_only_ddp_10000/`. |
+| 2026-06-02 20:04:30 CST | Confirmed the restarted run is active: log reached optimizer step ~9 with no runtime errors, and GPU 5/6 remain loaded around 80 GB / 78 GB. No checkpoint/eval yet; first save/eval is at step 100. |
+| 2026-06-02 20:41:00 CST | Step-100 eval for `runs/synthetic_v1_response_only_ddp_10000/` completed: `32/100` accuracy and `100/100` boxed rate. Family results: `numeral_system 13/16`, `unit_conversion 11/14`, `text_decryption 6/22`, `bit_manipulation 2/15`, `equation_symbol_transformation 0/17`, `gravity_formula 0/16`. The run saved `adapter_best` and `checkpoints/checkpoint-000100`, then continued training. |
+| 2026-06-02 20:54:00 CST | Audited `generate_synthetic_data.py` and found `synthetic_v1` solvability bugs. Patched generator for `synthetic_v2`: versioned outputs, built-in validation, guaranteed visible equation query mappings, visible text query cipher chars, and numeric answer/display consistency. Generated `data/synthetic_v2.csv`, `data/synthetic_v2_metadata.jsonl`, `data/synthetic_v2_report.json`, and `data/train_plus_synthetic_v2.csv`; independent checks found equation missing-visible-mapping `0/1000`, text missing-visible-mapping `0/1000`, and numeric display consistency errors `0`. |
+| 2026-06-02 21:01:42 CST | Stopped the live `synthetic_v1_response_only_ddp_10000` run after preserving step-100 eval/checkpoint. Decision: do not fall back to raw-only `data/train.csv`; use fixed `data/train_plus_synthetic_v2.csv` for the next formal run because it preserves the 9,500 official rows plus 6,000 validated balanced synthetic rows. |
+| 2026-06-02 21:03:47 CST | Started clean v2 response-only DDP run on GPUs 5/6. Run root: `runs/synthetic_v2_response_only_ddp_10000/`; PID: `127425`; W&B: `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft/runs/r80304mq`; `RESUME_FROM_CHECKPOINT=(none)`, so it starts from the base model with a new LoRA adapter. |
+| 2026-06-02 21:07:00 CST | Confirmed v2 run is active: it entered `[7/8] Training`, reached optimizer step 2 with losses `2.8341 -> 2.7281`, and GPU 5/6 were both loaded with active compute. First v2 eval/checkpoint is expected at step 100. |
+| 2026-06-02 21:11:58 CST | Checked `synthetic_v2` and found all six generated families present with `1000` rows each and no synthetic answer/visibility/length issues. Found a combined-data caveat: `173` official `equation_symbol_transformation` rows in `train_plus_synthetic_v2.csv` contain `{` or `}` in the gold answer, which current boxed formatting/parsing cannot safely handle. Decision: temporarily filter these for the next clean v2 baseline; add them back in a later version after implementing brace-safe boxed formatting, stopping, extraction, and unescaping. |
+| 2026-06-02 21:14:00 CST | Created filtered combined data `data/train_plus_synthetic_v2_no_brace_answers.csv`: removed 173 official `equation_symbol_transformation` brace-answer rows, kept 15,327 rows, and left 0 remaining answers containing `{` or `}`. Filter report: `data/train_plus_synthetic_v2_no_brace_answers_report.json`. |
+| 2026-06-02 21:15:33 CST | Stopped the unfiltered v2 run `runs/synthetic_v2_response_only_ddp_10000/` by SIGTERM at optimizer step 29. It had not reached step-100 checkpoint/eval, so it should not be treated as a usable training result. |
+| 2026-06-02 21:19:05 CST | Started clean no-brace v2 response-only DDP run on GPUs 5/6. Run root: `runs/synthetic_v2_no_brace_response_only_ddp_10000/`; torchrun PID file: `runs/synthetic_v2_no_brace_response_only_ddp_10000/synthetic_v2_no_brace_response_only_ddp_10000.pid`; W&B: `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft/runs/di0xzgvq`; `RESUME_FROM_CHECKPOINT=(none)`. |
+| 2026-06-02 21:21:32 CST | Confirmed no-brace v2 run is active: it loaded 15,327 rows, entered `[7/8] Training`, reached optimizer step 2, and GPUs 5/6 are both loaded with active compute. No early RuntimeError/OOM/`mha_graph` issue observed. First checkpoint/eval remains step 100. |
+| 2026-06-03 10:17:43 CST | The no-brace v2 run has produced intermediate eval results. Latest finished eval is `eval_step-1800` with `50/100` accuracy and `100/100` boxed rate; `step-1600` is the current best checkpoint at `50/100`. Eval artifacts are under `runs/synthetic_v2_no_brace_response_only_ddp_10000/eval/`, and training is still ongoing. |

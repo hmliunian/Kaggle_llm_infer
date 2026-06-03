@@ -117,6 +117,7 @@ TRAIN_ROW_LIMIT = env_int("TRAIN_ROW_LIMIT", 100 if SMOKE_MODE else 0)
 MAX_TRAIN_STEPS = env_int("MAX_TRAIN_STEPS", 2 if SMOKE_MODE else 0)
 ENABLE_BASELINE_EVAL = env_bool("ENABLE_BASELINE_EVAL", True)
 NUM_WORKERS = env_int("NUM_WORKERS", 0 if SMOKE_MODE else 4)
+DISABLE_CUDNN_SDP = env_bool("DISABLE_CUDNN_SDP", True)
 SEED = 42
 
 # GPU selection
@@ -173,10 +174,81 @@ def classify_prompt(prompt: str) -> str:
 
 
 # ─── Answer Extraction ────────────────────────────────────────────────────────
+def escape_boxed_answer(answer) -> str:
+    text = str(answer)
+    return text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+
+
+def unescape_boxed_answer(answer: str) -> str:
+    chars = []
+    i = 0
+    while i < len(answer):
+        ch = answer[i]
+        if ch == "\\" and i + 1 < len(answer) and answer[i + 1] in {"\\", "{", "}"}:
+            chars.append(answer[i + 1])
+            i += 2
+            continue
+        chars.append(ch)
+        i += 1
+    return "".join(chars)
+
+
+def find_boxed_spans(text: str):
+    spans = []
+    marker = "\\boxed{"
+    search_from = 0
+    while True:
+        start = text.find(marker, search_from)
+        if start < 0:
+            return spans
+
+        content_start = start + len(marker)
+        content_chars = []
+        depth = 1
+        escaped = False
+        i = content_start
+        while i < len(text):
+            ch = text[i]
+            if escaped:
+                content_chars.append(ch)
+                escaped = False
+            elif ch == "\\":
+                content_chars.append(ch)
+                escaped = True
+            elif ch == "{":
+                depth += 1
+                content_chars.append(ch)
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    spans.append(
+                        {
+                            "start": start,
+                            "end": i + 1,
+                            "content": "".join(content_chars),
+                        }
+                    )
+                    search_from = i + 1
+                    break
+                content_chars.append(ch)
+            else:
+                content_chars.append(ch)
+            i += 1
+        else:
+            search_from = content_start
+
+
+def truncate_after_first_boxed(text: str) -> str:
+    spans = find_boxed_spans(text)
+    if not spans:
+        return text
+    return text[: spans[0]["end"]]
+
+
 def extract_boxed(text: str):
-    matches = re.findall(r"\\boxed\{([^{}]*)\}", text)
-    if matches:
-        return matches[-1].strip()
+    spans = find_boxed_spans(text)
+    if spans:
+        return unescape_boxed_answer(spans[-1]["content"]).strip()
     return None
 
 
@@ -191,10 +263,11 @@ def numeric_equal(pred, gold, rel_tol=1e-3, abs_tol=1e-4):
 
 # ─── Data Formatting ─────────────────────────────────────────────────────────
 def format_example(tokenizer, prompt, answer):
+    escaped_answer = escape_boxed_answer(answer)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
-        {"role": "assistant", "content": f"The final answer is \\boxed{{{answer}}}."},
+        {"role": "assistant", "content": f"The final answer is \\boxed{{{escaped_answer}}}."},
     ]
     try:
         return tokenizer.apply_chat_template(
@@ -204,12 +277,12 @@ def format_example(tokenizer, prompt, answer):
         return (
             f"System: {SYSTEM_PROMPT}\n\n"
             f"User:\n{prompt}\n\n"
-            f"Assistant:\nThe final answer is \\boxed{{{answer}}}."
+            f"Assistant:\nThe final answer is \\boxed{{{escaped_answer}}}."
         )
 
 
 def format_answer_text(answer):
-    return f"{FINAL_ANSWER_PREFILL_TEXT}{answer}}}."
+    return f"{FINAL_ANSWER_PREFILL_TEXT}{escape_boxed_answer(answer)}}}."
 
 
 def format_inference_prompt(tokenizer, prompt):
@@ -233,16 +306,17 @@ def format_training_parts(tokenizer, prompt, answer):
 
 
 class StopAfterBoxClose(StoppingCriteria):
-    def __init__(self, tokenizer, start_len: int):
+    def __init__(self, tokenizer, start_len: int, prefix: str = ""):
         self.tokenizer = tokenizer
         self.start_len = start_len
+        self.prefix = prefix
 
     def __call__(self, input_ids, scores, **kwargs):
         generated = input_ids[0][self.start_len :]
         if generated.numel() == 0:
             return False
-        text = self.tokenizer.decode(generated, skip_special_tokens=True)
-        return "}" in text
+        text = self.prefix + self.tokenizer.decode(generated, skip_special_tokens=True)
+        return bool(find_boxed_spans(text))
 
 
 def generate_completion(model, tokenizer, prompt, max_new_tokens=128, use_cache=True):
@@ -260,9 +334,9 @@ def generate_completion(model, tokenizer, prompt, max_new_tokens=128, use_cache=
         pad_token_id=tokenizer.eos_token_id,
         use_cache=use_cache,
     )
-    if INFERENCE_FINAL_ANSWER_PREFILL and INFERENCE_STOP_AFTER_BOXED:
+    if INFERENCE_STOP_AFTER_BOXED:
         gen_kwargs["stopping_criteria"] = StoppingCriteriaList(
-            [StopAfterBoxClose(tokenizer, input_len)]
+            [StopAfterBoxClose(tokenizer, input_len, answer_prefix)]
         )
 
     try:
@@ -279,11 +353,10 @@ def generate_completion(model, tokenizer, prompt, max_new_tokens=128, use_cache=
             raise
 
     generated = tokenizer.decode(out[0][input_len:], skip_special_tokens=True)
-    if INFERENCE_FINAL_ANSWER_PREFILL and INFERENCE_STOP_AFTER_BOXED:
-        close_idx = generated.find("}")
-        if close_idx >= 0:
-            generated = generated[: close_idx + 1]
-    return answer_prefix + generated
+    decoded = answer_prefix + generated
+    if INFERENCE_STOP_AFTER_BOXED:
+        decoded = truncate_after_first_boxed(decoded)
+    return decoded
 
 
 # ─── Stratified Split ────────────────────────────────────────────────────────
@@ -687,6 +760,12 @@ def evaluate(
     family_correct = defaultdict(int)
     family_total = defaultdict(int)
     family_boxed = defaultdict(int)
+    source_correct = defaultdict(int)
+    source_total = defaultdict(int)
+    source_boxed = defaultdict(int)
+    source_family_correct = defaultdict(int)
+    source_family_total = defaultdict(int)
+    source_family_boxed = defaultdict(int)
     boxed_count = 0
     eval_records = []
 
@@ -701,14 +780,20 @@ def evaluate(
         pred = extract_boxed(decoded)
         gold = str(row["answer"]).strip()
         family = classify_prompt(row["prompt"])
+        source = str(row.get("source", "unknown") or "unknown").strip() or "unknown"
+        source_family_key = (source, family)
 
         family_total[family] += 1
+        source_total[source] += 1
+        source_family_total[source_family_key] += 1
         total += 1
 
         has_boxed = pred is not None
         if pred is not None:
             boxed_count += 1
             family_boxed[family] += 1
+            source_boxed[source] += 1
+            source_family_boxed[source_family_key] += 1
             if family in NUMERIC_FAMILIES:
                 is_correct = numeric_equal(pred, gold)
             else:
@@ -719,12 +804,15 @@ def evaluate(
         if is_correct:
             correct += 1
             family_correct[family] += 1
+            source_correct[source] += 1
+            source_family_correct[source_family_key] += 1
 
         eval_records.append(
             {
                 "sample_index": sample_idx,
                 "step_label": step_label,
                 "family": family,
+                "source": source,
                 "correct": bool(is_correct),
                 "has_boxed_answer": bool(has_boxed),
                 "gold": gold,
@@ -748,6 +836,30 @@ def evaluate(
             "boxed_count": fb,
             "boxed_rate": fb / max(ft, 1),
         }
+    source_summary = {}
+    for source in sorted(source_total.keys()):
+        st = source_total[source]
+        sc = source_correct[source]
+        sb = source_boxed[source]
+        source_summary[source] = {
+            "correct": sc,
+            "total": st,
+            "accuracy": sc / max(st, 1),
+            "boxed_count": sb,
+            "boxed_rate": sb / max(st, 1),
+        }
+    source_family_summary = {}
+    for source, fam in sorted(source_family_total.keys()):
+        sft = source_family_total[(source, fam)]
+        sfc = source_family_correct[(source, fam)]
+        sfb = source_family_boxed[(source, fam)]
+        source_family_summary.setdefault(source, {})[fam] = {
+            "correct": sfc,
+            "total": sft,
+            "accuracy": sfc / max(sft, 1),
+            "boxed_count": sfb,
+            "boxed_rate": sfb / max(sft, 1),
+        }
 
     log_main(f"\n{'='*60}")
     log_main(f"Evaluation @ {step_label}")
@@ -756,6 +868,11 @@ def evaluate(
     for fam, metrics in family_summary.items():
         log_main(
             f"  {fam}: {metrics['correct']}/{metrics['total']} = "
+            f"{metrics['accuracy']:.4f}, boxed={metrics['boxed_count']}/{metrics['total']}"
+        )
+    for source, metrics in source_summary.items():
+        log_main(
+            f"  source={source}: {metrics['correct']}/{metrics['total']} = "
             f"{metrics['accuracy']:.4f}, boxed={metrics['boxed_count']}/{metrics['total']}"
         )
 
@@ -775,6 +892,7 @@ def evaluate(
             "sample_index",
             "step_label",
             "family",
+            "source",
             "correct",
             "has_boxed_answer",
             "gold",
@@ -798,6 +916,8 @@ def evaluate(
             "boxed_count": boxed_count,
             "boxed_rate": boxed_rate,
             "family_summary": family_summary,
+            "source_summary": source_summary,
+            "source_family_summary": source_family_summary,
             "details_jsonl": str(jsonl_path),
             "details_csv": str(csv_path),
         }
@@ -830,7 +950,6 @@ def evaluate(
 # ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     if IS_DISTRIBUTED:
-        dist.init_process_group(backend="nccl")
         torch.cuda.set_device(LOCAL_RANK)
     else:
         os.environ["CUDA_VISIBLE_DEVICES"] = str(GPU_ID)
@@ -838,6 +957,9 @@ def main():
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
+    if DISABLE_CUDNN_SDP and hasattr(torch.backends.cuda, "enable_cudnn_sdp"):
+        # Avoid intermittent cuDNN MHA graph backward failures on this PyTorch/CUDA stack.
+        torch.backends.cuda.enable_cudnn_sdp(False)
     torch.set_float32_matmul_precision("medium")
     random.seed(SEED + RANK)
     torch.manual_seed(SEED + RANK)
@@ -866,6 +988,7 @@ def main():
     log_main(f"  CHECKPOINT_DIR={CHECKPOINT_DIR}")
     log_main(f"  CHECKPOINT_EVERY_STEPS={CHECKPOINT_EVERY_STEPS}, KEEP_LAST_CHECKPOINTS={KEEP_LAST_CHECKPOINTS}")
     log_main(f"  RESUME_FROM_CHECKPOINT={RESUME_FROM_CHECKPOINT or '(none)'}")
+    log_main(f"  DISABLE_CUDNN_SDP={DISABLE_CUDNN_SDP}")
     log_main(f"  WANDB_ENABLED={WANDB_ENABLED}, WANDB_PROJECT={WANDB_PROJECT}, WANDB_RUN_NAME={WANDB_RUN_NAME or '(auto)'}")
     log_main(f"  WANDB_MODE={WANDB_MODE or '(default)'}, WANDB_LOG_ARTIFACTS={WANDB_LOG_ARTIFACTS}")
     log_main()
@@ -992,6 +1115,9 @@ def main():
         model.print_trainable_parameters()
 
     if IS_DISTRIBUTED:
+        # Initialize DDP after PEFT adapter loading. Initializing torch.distributed
+        # earlier makes PEFT try tensor-parallel adapter sharding on this stack.
+        dist.init_process_group(backend="nccl")
         model = DistributedDataParallel(
             model,
             device_ids=[LOCAL_RANK],
