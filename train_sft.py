@@ -28,6 +28,8 @@ from tqdm.auto import tqdm
 from peft import LoraConfig, get_peft_model, PeftModel, TaskType
 from transformers import AutoModelForCausalLM, AutoTokenizer, StoppingCriteria, StoppingCriteriaList
 from nemotron_cache_compat import patch_nemotron_h_cache_compat
+from official_metric import extract_final_answer as official_extract_final_answer
+from official_metric import verify as official_verify
 
 
 def env_int(name, default):
@@ -281,8 +283,13 @@ def format_example(tokenizer, prompt, answer):
         )
 
 
-def format_answer_text(answer):
-    return f"{FINAL_ANSWER_PREFILL_TEXT}{escape_boxed_answer(answer)}}}."
+def format_answer_text(answer, cot=""):
+    # FINAL_ANSWER_PREFILL_TEXT begins with "</think>\n...". When a CoT is given,
+    # place it inside the think block (the prompt ends with an open "<think>\n"),
+    # so the supervised target is "<think>\n{cot}\n</think>\nThe final answer is ...".
+    cot = (cot or "").strip()
+    think = f"{cot}\n" if cot else ""
+    return f"{think}{FINAL_ANSWER_PREFILL_TEXT}{escape_boxed_answer(answer)}}}."
 
 
 def format_inference_prompt(tokenizer, prompt):
@@ -298,10 +305,12 @@ def format_inference_prompt(tokenizer, prompt):
         return f"System: {SYSTEM_PROMPT}\n\nUser:\n{prompt}\n\nAssistant:\n"
 
 
-def format_training_parts(tokenizer, prompt, answer):
+def format_training_parts(tokenizer, prompt, answer, cot=""):
     if TRAIN_FINAL_ANSWER_PREFILL:
         prompt_text = format_inference_prompt(tokenizer, prompt)
-        return prompt_text, format_answer_text(answer)
+        return prompt_text, format_answer_text(answer, cot)
+    # Non-prefill path renders an empty <think></think> via the chat template and
+    # cannot carry a CoT; CoT training requires TRAIN_FINAL_ANSWER_PREFILL=1.
     return "", format_example(tokenizer, prompt, answer)
 
 
@@ -402,6 +411,7 @@ class SFTDataset(Dataset):
             self.tokenizer,
             row["prompt"],
             row["answer"],
+            row.get("cot") or "",
         )
         text = prompt_text + answer_text
         enc = self.tokenizer(
@@ -518,6 +528,7 @@ def save_training_checkpoint(
             "max_seq_len": MAX_SEQ_LEN,
             "batch_size": BATCH_SIZE,
             "grad_accum_steps": GRAD_ACCUM_STEPS,
+            "world_size": WORLD_SIZE,
             "learning_rate": LEARNING_RATE,
             "num_epochs": NUM_EPOCHS,
             "max_train_steps": MAX_TRAIN_STEPS,
@@ -545,15 +556,48 @@ def load_training_state(checkpoint_path: Path, optimizer, scheduler, device):
         }
 
     state = torch.load(state_path, map_location=device, weights_only=False)
-    optimizer.load_state_dict(state["optimizer_state_dict"])
-    scheduler.load_state_dict(state["scheduler_state_dict"])
+    optimizer_state = state.get("optimizer_state_dict")
+    if optimizer_state is not None:
+        try:
+            optimizer.load_state_dict(optimizer_state)
+        except Exception as exc:
+            log_main(
+                "  Warning: could not restore optimizer state "
+                f"({type(exc).__name__}: {exc}); using a fresh optimizer."
+            )
+    else:
+        log_main("  No optimizer state found in training_state.pt; using a fresh optimizer.")
+
+    scheduler_state = state.get("scheduler_state_dict")
+    if scheduler_state is not None:
+        try:
+            scheduler.load_state_dict(scheduler_state)
+        except Exception as exc:
+            log_main(
+                "  Warning: could not restore scheduler state "
+                f"({type(exc).__name__}: {exc}); using a fresh scheduler."
+            )
+    else:
+        log_main("  No scheduler state found in training_state.pt; using a fresh scheduler.")
     if state.get("python_random_state") is not None:
         random.setstate(state["python_random_state"])
     if state.get("torch_rng_state") is not None:
         torch.set_rng_state(state["torch_rng_state"].cpu())
     cuda_rng_state_all = state.get("cuda_rng_state_all")
     if torch.cuda.is_available() and cuda_rng_state_all is not None:
-        torch.cuda.set_rng_state_all(cuda_rng_state_all)
+        cuda_rng_states = [
+            rng_state.detach().cpu() if torch.is_tensor(rng_state) else torch.as_tensor(rng_state, dtype=torch.uint8)
+            for rng_state in cuda_rng_state_all
+        ]
+        current_device_count = torch.cuda.device_count()
+        if len(cuda_rng_states) == current_device_count:
+            torch.cuda.set_rng_state_all(cuda_rng_states)
+        elif len(cuda_rng_states) > 0:
+            torch.cuda.set_rng_state(cuda_rng_states[0], device=device)
+            log_main(
+                "  CUDA RNG state count differs from the current visible device count; "
+                "restored the first saved state on the active device."
+            )
 
     return {
         "epoch": int(state.get("epoch", 0)),
@@ -777,7 +821,12 @@ def evaluate(
             max_new_tokens=max_new_tokens,
             use_cache=True,
         )
-        pred = extract_boxed(decoded)
+        # Scoring is byte-for-byte aligned with the official Kaggle metric:
+        # extract the final answer the same way the grader does, then verify with
+        # the official tolerance/string rules. `boxed_pred` is kept only as a
+        # boxed-coverage diagnostic and does NOT affect accuracy.
+        boxed_pred = extract_boxed(decoded)
+        pred = official_extract_final_answer(decoded)
         gold = str(row["answer"]).strip()
         family = classify_prompt(row["prompt"])
         source = str(row.get("source", "unknown") or "unknown").strip() or "unknown"
@@ -788,18 +837,14 @@ def evaluate(
         source_family_total[source_family_key] += 1
         total += 1
 
-        has_boxed = pred is not None
-        if pred is not None:
+        has_boxed = boxed_pred is not None
+        if has_boxed:
             boxed_count += 1
             family_boxed[family] += 1
             source_boxed[source] += 1
             source_family_boxed[source_family_key] += 1
-            if family in NUMERIC_FAMILIES:
-                is_correct = numeric_equal(pred, gold)
-            else:
-                is_correct = pred.strip() == gold
-        else:
-            is_correct = False
+
+        is_correct = official_verify(gold, pred)
 
         if is_correct:
             correct += 1
@@ -817,6 +862,7 @@ def evaluate(
                 "has_boxed_answer": bool(has_boxed),
                 "gold": gold,
                 "pred": pred,
+                "boxed_pred": boxed_pred,
                 "prompt": row["prompt"],
                 "decoded": decoded,
             }
@@ -897,6 +943,7 @@ def evaluate(
             "has_boxed_answer",
             "gold",
             "pred",
+            "boxed_pred",
             "prompt",
             "decoded",
         ]
@@ -1042,6 +1089,14 @@ def main():
             "answer": pl.String,
         },
     )
+    # Optional CoT column (v4+). Normalize to a String column so downstream
+    # row.get("cot") is well-defined even for datasets without CoT.
+    if "cot" in full_df.columns:
+        full_df = full_df.with_columns(pl.col("cot").cast(pl.String).fill_null(""))
+        n_cot = full_df.filter(pl.col("cot").str.len_chars() > 0).height
+        log_main(f"  CoT column present: {n_cot}/{len(full_df)} rows carry a CoT trace")
+    else:
+        log_main("  No CoT column in dataset (answer-only training)")
     log_main(f"  Total rows: {len(full_df)}")
 
     # Task family distribution
@@ -1073,15 +1128,16 @@ def main():
     log_main(f"  Vocab size: {tokenizer.vocab_size}")
 
     # Show a sample formatted example
-    sample_row = train_df.to_dicts()[0]
+    sample_row = next((r for r in train_df.to_dicts() if (r.get("cot") or "")), train_df.to_dicts()[0])
     sample_prompt_text, sample_answer_text = format_training_parts(
         tokenizer,
         sample_row["prompt"],
         sample_row["answer"],
+        sample_row.get("cot") or "",
     )
     sample_text = sample_prompt_text + sample_answer_text
-    log_main(f"\n  Sample formatted text (first 500 chars):")
-    log_main(f"  {sample_text[:500]}")
+    log_main(f"\n  Sample formatted text (first 800 chars):")
+    log_main(f"  {sample_text[:800]}")
     log_main()
 
     log_main(f"[4/8] Loading model from {MODEL_PATH} ...")

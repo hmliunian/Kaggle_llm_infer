@@ -139,7 +139,7 @@ EVAL_LABEL=synthetic_v1_100 \
 .venv/bin/python eval_adapter.py
 ```
 
-By default eval now pre-fills `</think>\nThe final answer is \boxed{` and stops after the first generated `}`. This makes the saved `decoded` field directly parseable as a boxed final answer and avoids spending the full token budget inside long reasoning. For diagnostic comparison with the old behavior, run with:
+By default eval now pre-fills `</think>\nThe final answer is \boxed{` and stops after the first complete boxed span, so escaped answer-internal braces do not terminate generation early. This makes the saved `decoded` field directly parseable as a boxed final answer and avoids spending the full token budget inside long reasoning. For diagnostic comparison with the old behavior, run with:
 
 ```bash
 INFERENCE_FINAL_ANSWER_PREFILL=0 INFERENCE_STOP_AFTER_BOXED=0 ...

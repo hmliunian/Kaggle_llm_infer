@@ -193,28 +193,61 @@ def gen_numeric_equation(row_id: str, rng: random.Random) -> SyntheticExample:
     )
     op_rules = dict(zip(op_symbols, rule_names))
 
+    all_rule_names = ["absdiff", "sum_mod", "prod_mod", "cross_sum", "swap_concat", "outer_inner_abs"]
+
     def make_expr(required_op: str | None = None) -> tuple[str, str]:
         op = required_op if required_op is not None else rng.choice(op_symbols)
         left = f"{rng.randrange(10, 100):02d}"
         right = f"{rng.randrange(10, 100):02d}"
         return f"{left}{op}{right}", numeric_equation_rule(op_rules[op], left, right)
 
-    query_op = rng.choice(op_symbols)
-    query, answer = make_expr(query_op)
-    n_examples = rng.randint(max(5, len(op_symbols) + 1), 8)
+    def consistent_rules(op: str, pairs: list[tuple[str, str]]) -> list[str]:
+        true_rule = op_rules[op]
+        out = [
+            r
+            for r in all_rule_names
+            if all(
+                numeric_equation_rule(r, l, rr) == numeric_equation_rule(true_rule, l, rr)
+                for l, rr in pairs
+            )
+        ]
+        return out
+
+    # Build, per operator, enough examples that the shown examples uniquely pin
+    # its rule among all candidates. Otherwise the task is not solvable from the
+    # examples (a solver cannot tell which rule produced the query).
+    op_pairs: dict[str, list[tuple[str, str]]] = {op: [] for op in op_symbols}
+    for op in op_symbols:
+        for _ in range(400):
+            if op_pairs[op] and len(consistent_rules(op, op_pairs[op])) == 1:
+                break
+            left = f"{rng.randrange(10, 100):02d}"
+            right = f"{rng.randrange(10, 100):02d}"
+            if not op_pairs[op]:
+                op_pairs[op].append((left, right))
+                continue
+            trial = op_pairs[op] + [(left, right)]
+            if len(consistent_rules(op, trial)) < len(consistent_rules(op, op_pairs[op])):
+                op_pairs[op].append((left, right))
+        else:
+            raise RuntimeError(f"could not disambiguate numeric operator rule for {op!r}")
+        if len(consistent_rules(op, op_pairs[op])) != 1:
+            raise RuntimeError(f"could not disambiguate numeric operator rule for {op!r}")
+
     examples = []
     seen_inputs = set()
     for op in op_symbols:
-        expr, out = make_expr(op)
-        examples.append((expr, out))
-        seen_inputs.add(expr)
-    while len(examples) < n_examples:
-        expr, out = make_expr()
-        if expr in seen_inputs:
-            continue
-        seen_inputs.add(expr)
-        examples.append((expr, out))
+        for left, right in op_pairs[op]:
+            expr = f"{left}{op}{right}"
+            if expr in seen_inputs:
+                continue
+            seen_inputs.add(expr)
+            examples.append((expr, numeric_equation_rule(op_rules[op], left, right)))
     rng.shuffle(examples)
+
+    # Query uses an operator whose rule is now uniquely determined by the examples.
+    query_op = rng.choice(op_symbols)
+    query, answer = make_expr(query_op)
 
     prompt = (
         "In Alice's Wonderland, a secret set of transformation rules is applied to equations. "
