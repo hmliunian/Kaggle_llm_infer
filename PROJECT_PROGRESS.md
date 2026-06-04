@@ -161,7 +161,12 @@ smoke(GPU 2,v4 数据,thinking eval):格式正确(CoT 在 think 块内)、模型
 - Run:`runs/cot_v4_ddp56_from_base/`,torchrun PID `2265360`,W&B `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft`(run 名 `cot_v4_ddp56_from_base`)。
 - 数据:`data/train_plus_synthetic_v4.csv`(16909/21000 行带 CoT)。
 - 关键参数:`CUDA_VISIBLE_DEVICES=5,6`、`RESUME_FROM_CHECKPOINT=(空,从 base)`、`MAX_SEQ_LEN=1024`、`LORA_RANK=16`、`BATCH_SIZE=1`、`GRAD_ACCUM_STEPS=4`、`NUM_EPOCHS=3`、`MAX_TRAIN_STEPS=10000`、`TRAIN_FINAL_ANSWER_PREFILL=1`、`INFERENCE_FINAL_ANSWER_PREFILL=0`、`EVAL_EVERY_STEPS=200`、`EVAL_MAX_NEW_TOKENS=512`、`VAL_MAX_SAMPLES=48`、`CHECKPOINT_EVERY_STEPS=100`、`DISABLE_CUDNN_SDP=1`。
-- 状态:已进入训练,step 6 loss 1.02(预热下降),GPU 5/6 各 ~80GB。首个 checkpoint@step100,首个 thinking-eval@step200。
+- 状态:已崩溃退出。主日志显示 rank0 在 `loss.backward()` 处 CUDA OOM,时间 `2026-06-03 23:06:04`,当时约 optimizer step 97、batch 391/9452,距首个 `checkpoint-000100` 还差 3 step;`checkpoints/` 和 `eval/` 均为空,没有可恢复/可评分产物。
+- 直接原因:`MAX_SEQ_LEN=1024` 的 CoT 训练显存高于旧 `seq_len=512` 假设,而训练阶段仍关闭 gradient checkpointing。OOM 时本训练进程已占约 `77.93 GiB`,PyTorch allocated `75.85 GiB`,GPU 只剩 `494.75 MiB`,再申请 `462 MiB` 失败。日志里显示的 `GPU 0` 是 DDP rank0 的本地可见卡,对应 `CUDA_VISIBLE_DEVICES=5,6` 里的物理 GPU 5。
+- 建议重跑:先给 CoT 长序列训练打开 gradient checkpointing(或降低 `MAX_SEQ_LEN`/LoRA rank),并把首个保存点临时降到 `CHECKPOINT_EVERY_STEPS=50` 以免再次在 step100 前无产物退出。
+- 用户判断 OOM 可能是偶发现象,要求删除重算/省显存改动并重跑。已停止临时 GC 试跑 `runs/cot_v4_ddp56_from_base_gc/`(SIGTERM,约 step 12,无 checkpoint),恢复非 gradient-checkpointing 训练路径。
+- 非 gradient-checkpointing 重跑 `runs/cot_v4_ddp56_from_base_retry/` 复现同一 OOM:2026-06-04 12:16 CST 仍在 rank0 `loss.backward()`、optimizer step 97、batch 391/9452 崩溃。不是偶发;同一 shuffle 顺序下 rank0 的 batch 391 是 `official_train` 的 `text_decryption` 样本,训练长度 `922` tokens、prompt `212` tokens、response/CoT label `710` tokens、CoT `1846` chars、answer `knight follows in garden`。训练集长度分布:p99 `775`,max `922`;仅 `text_decryption` 有 `>=850` 的长样本(21 条,`>=900` 的 3 条)。rank0 已在 batch 318 跑过 `853` tokens 样本,说明非重算 80GB 的临界点约在 900-token CoT 样本附近。
+- 该重跑已保存可恢复点:`runs/cot_v4_ddp56_from_base_retry/checkpoints/checkpoint-000050/`。后续如继续非重算,必须降低峰值:缩短/截断极少数超长 CoT,降低 `MAX_SEQ_LEN`,或降低 LoRA rank;否则会在同一位置复现。临时 `retry_alloc` 验证 run 未进入训练,因为当时 GPU 5/6 被外部 `rwj` eval 进程各占约 19-20GB,加载阶段即 OOM,这与 step97 训练 OOM 是另一个资源冲突。
 - 重要:这是**首个 thinking 模式 + 官方 metric 对齐**的 run,其 eval 数才是与排行榜可比的真实基线;不要再拿它和历史 skip-thinking eval 直接比。
 
 ## Active Issue

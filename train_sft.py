@@ -120,6 +120,7 @@ MAX_TRAIN_STEPS = env_int("MAX_TRAIN_STEPS", 2 if SMOKE_MODE else 0)
 ENABLE_BASELINE_EVAL = env_bool("ENABLE_BASELINE_EVAL", True)
 NUM_WORKERS = env_int("NUM_WORKERS", 0 if SMOKE_MODE else 4)
 DISABLE_CUDNN_SDP = env_bool("DISABLE_CUDNN_SDP", True)
+TRAIN_USE_CACHE = env_bool("TRAIN_USE_CACHE", False)
 SEED = 42
 
 # GPU selection
@@ -532,6 +533,7 @@ def save_training_checkpoint(
             "learning_rate": LEARNING_RATE,
             "num_epochs": NUM_EPOCHS,
             "max_train_steps": MAX_TRAIN_STEPS,
+            "train_use_cache": TRAIN_USE_CACHE,
             "seed": SEED,
         },
     }
@@ -1035,7 +1037,7 @@ def main():
     log_main(f"  CHECKPOINT_DIR={CHECKPOINT_DIR}")
     log_main(f"  CHECKPOINT_EVERY_STEPS={CHECKPOINT_EVERY_STEPS}, KEEP_LAST_CHECKPOINTS={KEEP_LAST_CHECKPOINTS}")
     log_main(f"  RESUME_FROM_CHECKPOINT={RESUME_FROM_CHECKPOINT or '(none)'}")
-    log_main(f"  DISABLE_CUDNN_SDP={DISABLE_CUDNN_SDP}")
+    log_main(f"  DISABLE_CUDNN_SDP={DISABLE_CUDNN_SDP}, TRAIN_USE_CACHE={TRAIN_USE_CACHE}")
     log_main(f"  WANDB_ENABLED={WANDB_ENABLED}, WANDB_PROJECT={WANDB_PROJECT}, WANDB_RUN_NAME={WANDB_RUN_NAME or '(auto)'}")
     log_main(f"  WANDB_MODE={WANDB_MODE or '(default)'}, WANDB_LOG_ARTIFACTS={WANDB_LOG_ARTIFACTS}")
     log_main()
@@ -1077,6 +1079,7 @@ def main():
             "num_workers": NUM_WORKERS,
             "checkpoint_every_steps": CHECKPOINT_EVERY_STEPS,
             "keep_last_checkpoints": KEEP_LAST_CHECKPOINTS,
+            "train_use_cache": TRAIN_USE_CACHE,
             "seed": SEED,
         }
     )
@@ -1152,6 +1155,9 @@ def main():
 
     if patch_nemotron_h_cache_compat(model):
         log_main("  Patched Nemotron-H generation cache compatibility.")
+    if hasattr(model.config, "use_cache"):
+        model.config.use_cache = TRAIN_USE_CACHE
+        log_main(f"  Training model.config.use_cache={model.config.use_cache}")
 
     if resume_checkpoint is not None:
         log_main(f"\n[5/8] Loading LoRA adapter from checkpoint {resume_checkpoint} ...")

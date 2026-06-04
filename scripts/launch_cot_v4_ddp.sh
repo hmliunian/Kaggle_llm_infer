@@ -9,7 +9,7 @@
 set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/data2/yaoxuran/llm_infer}"
-RUN_NAME="${RUN_NAME:-cot_v4_ddp56_from_base}"
+RUN_NAME="${RUN_NAME:-cot_v4_ddp56_from_base_retry}"
 RUN_DIR="$ROOT_DIR/runs/$RUN_NAME"
 TRAIN_CSV="${TRAIN_CSV:-$ROOT_DIR/data/train_plus_synthetic_v4.csv}"
 
@@ -18,8 +18,8 @@ mkdir -p "$RUN_DIR" "$RUN_DIR/artifacts" "$RUN_DIR/eval" "$RUN_DIR/checkpoints" 
 cd "$ROOT_DIR"
 env CUDA_VISIBLE_DEVICES=5,6 \
   TRAIN_CSV="$TRAIN_CSV" \
-  RESUME_FROM_CHECKPOINT="" \
-  MAX_SEQ_LEN=1024 \
+  RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}" \
+  MAX_SEQ_LEN="${MAX_SEQ_LEN:-1024}" \
   LORA_RANK=16 \
   LORA_ALPHA=16 \
   BATCH_SIZE=1 \
@@ -33,8 +33,9 @@ env CUDA_VISIBLE_DEVICES=5,6 \
   VAL_MAX_SAMPLES=48 \
   EVAL_EVERY_STEPS=200 \
   EVAL_MAX_NEW_TOKENS=512 \
-  CHECKPOINT_EVERY_STEPS=100 \
+  CHECKPOINT_EVERY_STEPS="${CHECKPOINT_EVERY_STEPS:-50}" \
   KEEP_LAST_CHECKPOINTS=20 \
+  PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
   OUTPUT_DIR="$RUN_DIR/adapter" \
   SUBMISSION_DIR="$RUN_DIR/artifacts" \
   EVAL_OUTPUT_DIR="$RUN_DIR/eval" \
