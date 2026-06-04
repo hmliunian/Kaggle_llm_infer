@@ -1,0 +1,203 @@
+{
+  "input": "data/train_plus_synthetic_v3.csv",
+  "total_rows": 21000,
+  "by_source_family": {
+    "official_train|bit_manipulation": {
+      "total": 1602,
+      "cot_ok": 86,
+      "cot_rate": 0.05368289637952559,
+      "fail_breakdown": {
+        "bit_rule_not_unique": 1513,
+        "computed_ne_gold": 3
+      }
+    },
+    "official_train|equation_symbol_transformation": {
+      "total": 1555,
+      "cot_ok": 46,
+      "cot_rate": 0.029581993569131833,
+      "fail_breakdown": {
+        "query_token_missing": 823,
+        "other": 521,
+        "computed_ne_gold": 25,
+        "query_op_missing": 136,
+        "ambiguous_examples": 4
+      }
+    },
+    "official_train|gravity_formula": {
+      "total": 1597,
+      "cot_ok": 1597,
+      "cot_rate": 1.0,
+      "fail_breakdown": {}
+    },
+    "official_train|numeral_system": {
+      "total": 1576,
+      "cot_ok": 1576,
+      "cot_rate": 1.0,
+      "fail_breakdown": {}
+    },
+    "official_train|text_decryption": {
+      "total": 1576,
+      "cot_ok": 605,
+      "cot_rate": 0.38388324873096447,
+      "fail_breakdown": {
+        "query_token_missing": 971
+      }
+    },
+    "official_train|unit_conversion": {
+      "total": 1594,
+      "cot_ok": 1594,
+      "cot_rate": 1.0,
+      "fail_breakdown": {}
+    },
+    "synthetic_v3|bit_manipulation": {
+      "total": 3000,
+      "cot_ok": 3000,
+      "cot_rate": 1.0,
+      "fail_breakdown": {}
+    },
+    "synthetic_v3|equation_symbol_transformation": {
+      "total": 3000,
+      "cot_ok": 2905,
+      "cot_rate": 0.9683333333333334,
+      "fail_breakdown": {
+        "ambiguous_examples": 95
+      }
+    },
+    "synthetic_v3|gravity_formula": {
+      "total": 3000,
+      "cot_ok": 3000,
+      "cot_rate": 1.0,
+      "fail_breakdown": {}
+    },
+    "synthetic_v3|numeral_system": {
+      "total": 500,
+      "cot_ok": 500,
+      "cot_rate": 1.0,
+      "fail_breakdown": {}
+    },
+    "synthetic_v3|text_decryption": {
+      "total": 1500,
+      "cot_ok": 1500,
+      "cot_rate": 1.0,
+      "fail_breakdown": {}
+    },
+    "synthetic_v3|unit_conversion": {
+      "total": 500,
+      "cot_ok": 500,
+      "cot_rate": 1.0,
+      "fail_breakdown": {}
+    }
+  },
+  "total_cot_ok": 16909,
+  "total_cot_rate": 0.8051904761904762,
+  "fail_examples": {
+    "official_train|bit_manipulation|bit_rule_not_unique": [
+      {
+        "id": "00066667",
+        "answer": "10010111",
+        "msg": "bit rule not uniquely identifiable from examples (0 candidates)"
+      },
+      {
+        "id": "000b53cf",
+        "answer": "01000011",
+        "msg": "bit rule not uniquely identifiable from examples (0 candidates)"
+      }
+    ],
+    "official_train|text_decryption|query_token_missing": [
+      {
+        "id": "00189f6a",
+        "answer": "cat imagines book",
+        "msg": "cipher letters missing from examples: hk"
+      },
+      {
+        "id": "005ad22a",
+        "answer": "king chases castle",
+        "msg": "cipher letters missing from examples: b"
+      }
+    ],
+    "official_train|equation_symbol_transformation|query_token_missing": [
+      {
+        "id": "00457d26",
+        "answer": "@&",
+        "msg": "query symbols missing from examples: [[-!'"
+      },
+      {
+        "id": "00c032a8",
+        "answer": "\\^?",
+        "msg": "query symbols missing from examples: ))!\\)"
+      }
+    ],
+    "official_train|equation_symbol_transformation|other": [
+      {
+        "id": "00d8b3db",
+        "answer": "17/",
+        "msg": "no numeric rule consistent with examples for query operator"
+      },
+      {
+        "id": "01cd504a",
+        "answer": "6644",
+        "msg": "no numeric rule consistent with examples for query operator"
+      }
+    ],
+    "official_train|equation_symbol_transformation|computed_ne_gold": [
+      {
+        "id": "026106f5",
+        "answer": "631",
+        "msg": "equation CoT self-check failed: '62' != '631'"
+      },
+      {
+        "id": "10fdae00",
+        "answer": "-47",
+        "msg": "equation CoT self-check failed: '47' != '-47'"
+      }
+    ],
+    "official_train|equation_symbol_transformation|query_op_missing": [
+      {
+        "id": "053f4545",
+        "answer": "731",
+        "msg": "query operator '@' not shown in examples"
+      },
+      {
+        "id": "065f9dea",
+        "answer": "*53",
+        "msg": "query operator '*' not shown in examples"
+      }
+    ],
+    "official_train|equation_symbol_transformation|ambiguous_examples": [
+      {
+        "id": "0c8a8a16",
+        "answer": "{17",
+        "msg": "ambiguous numeric operator '{': examples fit ['absdiff', 'outer_inner_abs'] which disagree on the query"
+      },
+      {
+        "id": "d1bd7478",
+        "answer": "30",
+        "msg": "ambiguous numeric operator ':': examples fit ['absdiff', 'outer_inner_abs'] which disagree on the query"
+      }
+    ],
+    "official_train|bit_manipulation|computed_ne_gold": [
+      {
+        "id": "6abc8047",
+        "answer": "00101001",
+        "msg": "bit CoT self-check failed: 10101001 != 00101001"
+      },
+      {
+        "id": "82d937aa",
+        "answer": "11111011",
+        "msg": "bit CoT self-check failed: 11111010 != 11111011"
+      }
+    ],
+    "synthetic_v3|equation_symbol_transformation|ambiguous_examples": [
+      {
+        "id": "synthetic_v3_equ_000042",
+        "answer": "25",
+        "msg": "ambiguous numeric operator '*': examples fit ['absdiff', 'cross_sum'] which disagree on the query"
+      },
+      {
+        "id": "synthetic_v3_equ_000044",
+        "answer": "18",
+        "msg": "ambiguous numeric operator '|': examples fit ['absdiff', 'outer_inner_abs'] which disagree on the query"
+      }
+    ]
+  }
+}

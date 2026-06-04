@@ -1,0 +1,19 @@
+{
+  "source": "data/train_plus_synthetic_v2.csv",
+  "output": "data/train_plus_synthetic_v2_no_brace_answers.csv",
+  "original_rows": 15500,
+  "removed_rows": 173,
+  "kept_rows": 15327,
+  "remaining_brace_answer_rows": 0,
+  "removed_by_task_family": {
+    "equation_symbol_transformation": 173
+  },
+  "kept_by_task_family": {
+    "bit_manipulation": 2602,
+    "equation_symbol_transformation": 2382,
+    "gravity_formula": 2597,
+    "numeral_system": 2576,
+    "text_decryption": 2576,
+    "unit_conversion": 2594
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "answer_style": "short answer only; train_sft.py wraps as The final answer is \\boxed{answer}.",
+  "combined_rows": 21000,
+  "family_counts": {
+    "bit_manipulation": 3000,
+    "equation_symbol_transformation": 3000,
+    "gravity_formula": 3000,
+    "numeral_system": 500,
+    "text_decryption": 1500,
+    "unit_conversion": 500
+  },
+  "original_family_counts": {
+    "bit_manipulation": 1602,
+    "equation_symbol_transformation": 1555,
+    "gravity_formula": 1597,
+    "numeral_system": 1576,
+    "text_decryption": 1576,
+    "unit_conversion": 1594
+  },
+  "original_rows": 9500,
+  "rules": {
+    "bit_manipulation": "uniquely identifiable 8-bit XOR/NOT/rotation/bit-reversal rules",
+    "equation_symbol_transformation": "mixed character substitution and numeric operator transformation rules",
+    "gravity_formula": "d = 0.5 * g * t^2 with hidden g, more examples, and 2-decimal answers",
+    "numeral_system": "Roman numerals",
+    "text_decryption": "monoalphabetic substitution cipher over lowercase English sentences",
+    "unit_conversion": "hidden linear scale factor with 2-decimal answers"
+  },
+  "seed": 20260601,
+  "synthetic_family_counts": {
+    "bit_manipulation": 3000,
+    "equation_symbol_transformation": 3000,
+    "gravity_formula": 3000,
+    "numeral_system": 500,
+    "text_decryption": 1500,
+    "unit_conversion": 500
+  },
+  "synthetic_rows": 11500,
+  "version": "synthetic_v3"
+}
