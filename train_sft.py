@@ -435,7 +435,23 @@ class SFTDataset(Dataset):
             prompt_mask = prompt_mask[-prompt_budget:] if prompt_budget else []
 
         cot_budget = max(self.max_length - len(prompt_ids) - len(final_ids), 0)
-        cot_ids = cot_ids[:cot_budget]
+        if len(cot_ids) > cot_budget:
+            if cot_budget <= 0:
+                cot_ids = []
+            else:
+                marker_ids = self.tokenizer(
+                    "\n[... omitted middle reasoning ...]\n",
+                    add_special_tokens=False,
+                    padding=False,
+                    return_tensors=None,
+                )["input_ids"]
+                if len(marker_ids) + 2 <= cot_budget:
+                    head_budget = max((cot_budget - len(marker_ids)) // 3, 1)
+                    tail_budget = cot_budget - len(marker_ids) - head_budget
+                    cot_ids = cot_ids[:head_budget] + marker_ids + cot_ids[-tail_budget:]
+                else:
+                    # Tiny budgets are rare; prefer the tail where the query application lives.
+                    cot_ids = cot_ids[-cot_budget:]
 
         input_ids = prompt_ids + cot_ids + final_ids
         attention_mask = prompt_mask + [1] * (len(cot_ids) + len(final_ids))

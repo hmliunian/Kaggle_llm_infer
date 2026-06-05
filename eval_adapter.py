@@ -56,6 +56,15 @@ def main():
     _, val_df = train_sft.stratified_split(full_df, val_ratio=train_sft.VAL_RATIO, seed=train_sft.SEED)
     print(f"  Total rows: {len(full_df)}, Val rows: {len(val_df)}")
 
+    # Optional data-parallel sharding: split the val set across processes/GPUs.
+    # gather_every keeps the split deterministic and interleaved so each shard sees
+    # a comparable family mix. Each shard writes its own EVAL_LABEL outputs.
+    num_shards = int(os.environ.get("NUM_SHARDS", "1"))
+    shard_index = int(os.environ.get("SHARD_INDEX", "0"))
+    if num_shards > 1:
+        val_df = val_df.gather_every(num_shards, offset=shard_index)
+        print(f"  Shard {shard_index}/{num_shards}: {len(val_df)} rows")
+
     print(f"\n[2/5] Loading tokenizer from {model_path} ...")
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:

@@ -1,6 +1,6 @@
 # Nemotron SFT Project Progress
 
-Last updated: 2026-06-03 21:31:28 CST
+Last updated: 2026-06-05 18:58 CST
 
 | Stage | Status | Evidence | Next action |
 | --- | --- | --- | --- |
@@ -11,6 +11,124 @@ Last updated: 2026-06-03 21:31:28 CST
 | M5 Full SFT baseline | Archived | Earlier smoke/mini/baseline/rank test artifacts were removed on 2026-06-02 to avoid mixing old-code results with the current response-only/DDP runs. | No action unless a fresh non-synthetic baseline is needed. |
 | M6 Synthetic data | Running | `synthetic_v1` produced 6,000 rows but later validation found solvability bugs. `synthetic_v2` fixed visibility/numeric consistency and produced the clean no-brace v2 DDP baseline through step-2600 eval (`48/100`, best observed step-1900 `51/100`, `100/100` boxed). `synthetic_v3` adds weak-family upweighting and brace-safe answer support; the active v3 run is now 5/6 DDP at `runs/synthetic_v3_ddp56_from_gpu6_latest/`, resumed from GPU 6 `checkpoint-000050`. | Let the v3 DDP run reach step-100 eval/checkpoint, then compare against the v2 no-brace baseline and full-val v2 best result. |
 | M7 RLVR/GRPO | Not started | No RL pipeline found. | Defer. |
+| M8 Solver-guided CoT v5 | Running | `data/train_plus_synthetic_v5.csv` has `19748/21000` CoT rows after verified imports from `extern/nemotron`; formal GPU3 run launched at `runs/cot_v5_gpu3_from_base_raw/`. | Monitor checkpoint-000050, then step-200 eval; do not resume old escaped-format checkpoints. |
+
+## Planned bit/equation repair: solver-guided CoT v5 (2026-06-05 17:36 CST)
+
+Current diagnosis: continuing v4 training alone is unlikely to fix `bit_manipulation` and `equation_symbol_transformation`, because their remaining errors are mostly rule-space mismatch and partial unobservability, not just insufficient SFT steps.
+
+### Public references to inspect
+
+Clone the Progress Prize / solver reference into the project workspace when available:
+
+```bash
+mkdir -p /data2/yaoxuran/llm_infer/extern
+git clone --depth 1 https://github.com/tonghuikang/nemotron.git /data2/yaoxuran/llm_infer/extern/nemotron
+```
+
+If full clone is slow, use sparse checkout:
+
+```bash
+mkdir -p /data2/yaoxuran/llm_infer/extern
+git clone --depth 1 --filter=blob:none --sparse https://github.com/tonghuikang/nemotron.git /data2/yaoxuran/llm_infer/extern/nemotron
+cd /data2/yaoxuran/llm_infer/extern/nemotron
+git sparse-checkout set reasoners
+```
+
+Files to inspect first:
+
+- `reasoners/bit_manipulation.py`
+- `reasoners/equation_numeric.py`
+- any other `equation` / `transformation` reasoner
+- any trace / CoT generation utilities
+
+### Why current synthetic data is insufficient
+
+`bit_manipulation`: current v3/v4 synthetic rules cover mostly whole-byte `xor`, `rotl_xor`, and `reverse_xor`. Public solver evidence suggests official bit tasks are often per-output-bit boolean rules over input-bit columns, including identity, NOT, constants, AND/OR/XOR, and mixed negated-operand forms. Therefore the current synthetic bit distribution covers only a narrow easy subset of official tasks.
+
+`equation_symbol_transformation`: current numeric equation synthetic rules are limited to several two-digit operations such as `absdiff`, `sum_mod`, `prod_mod`, `cross_sum`, `swap_concat`, and `outer_inner_abs`. Public solver evidence suggests official numeric transformation tasks include richer operations: concat/reverse concat, addition/subtraction/absdiff, multiplication, +/-1, division/modulo, reversed operands/results, sign encoded by operator prefix/suffix, digit-level rules, and determinant-like rules. This explains length-changing gold answers such as `631` or `62`.
+
+### v5 implementation plan
+
+1. Port or wrap the reference bit/equation solvers locally instead of trusting free-form model reasoning.
+2. Run the solvers on official `data/train.csv` bit/equation rows and produce an audit with:
+   - total rows by family
+   - uniquely solved rows
+   - solver prediction equals gold
+   - ambiguous rows
+   - unobserved-symbol / insufficient-example rows
+   - unsupported-rule rows
+3. Generate CoT only for rows where `solver_pred == gold` and the rule is uniquely supported by visible examples.
+4. Do not fabricate CoT for ambiguous or information-missing rows; that would leak gold answers and teach hallucinated reasoning.
+5. Build `data/train_plus_synthetic_v5.csv` by combining:
+   - official rows with solver-verified CoT where available
+   - existing v4 CoT for already solved families
+   - new synthetic bit/equation rows generated from the expanded solver rule space
+6. Retrain from base with the raw-answer boxed format fix already in `train_sft.py`; do not resume from old escaped-format CoT checkpoints.
+7. Only after raw-answer v5 SFT has nonzero bit/equation sampling success, run a small GRPO/RLVR pilot. Prefer GRPO over PPO because the task has a direct verifier and PPO adds value-model complexity. If GRPO groups have almost no correct samples, go back to solver/synthetic coverage rather than scaling RL.
+
+Success criteria:
+
+- measurable increase on fixed full v4/v5 validation for `bit_manipulation` and `equation_symbol_transformation`
+- no regression on `gravity_formula`, `numeral_system`, and `unit_conversion`
+- boxed rate remains near 100%
+- answer strings containing `{`, `}`, or `\` are emitted raw and score correctly under the official metric
+
+### v5 import result from `extern/nemotron` (2026-06-05 17:44 CST)
+
+User cloned the Progress Prize repo to `extern/nemotron/`. It contains `reasoning/*.txt` for all 9,500 official train rows plus `problems.jsonl` with granular categories/status/submissions.
+
+Added `scripts/build_v5_from_nemotron.py` and generated:
+
+- `data/train_plus_synthetic_v5.csv`
+- `data/train_plus_synthetic_v5_report.json`
+
+Import policy:
+
+- only official-train rows in `{bit_manipulation, equation_symbol_transformation, text_decryption}` are replaced/filled from `extern/nemotron`
+- a trace is imported only when its final answer matches the local gold under `official_metric.verify()`
+- all `\boxed` lines are stripped from imported CoT, so training still uses `train_sft.py`'s single canonical final answer target
+- text-decryption traces are compacted by removing full Wonderland dictionary candidate enumeration and keeping the decrypt + best-match evidence
+
+Coverage improvement:
+
+| Family | v4 official CoT | v5 official CoT | Added/fixed source |
+| --- | ---: | ---: | --- |
+| `bit_manipulation` | `86/1602` | `1364/1602` | per-output-bit boolean solver (`I/NOT/C0/C1/AND/OR/XOR/*-NOT`) |
+| `equation_symbol_transformation` | `46/1555` | `634/1555` | numeric + limited symbolic solver |
+| `text_decryption` | `605/1576` | `1576/1576` | substitution + Wonderland dictionary solver |
+
+Overall CoT coverage improved from v4 `16909/21000 = 0.805` to v5 `19748/21000 = 0.940`.
+
+External verified imports by granular category:
+
+- `bit_manipulation`: imported `1364`, rejected `238`
+- `cipher`: imported `1576`
+- `equation_numeric_deduce`: imported `541`, rejected `55`
+- `equation_numeric_guess`: imported `21`, rejected `115`
+- `cryptarithm_deduce`: imported `59`, rejected `600`
+- `cryptarithm_guess`: imported `13`, rejected `151`
+
+Length sanity after compaction:
+
+- official bit CoT: p50 `243` chars, p99 `418`, max `427`
+- official equation CoT: p50 `347`, p99 `643`, max `752`
+- official text CoT: p50 `732`, p99 `5652`, max `8597` (still long for rare multi-unknown cases; training truncation must preserve useful tail/final answer)
+
+Action taken: added tail-preserving CoT truncation in `train_sft.py`, smoke-tested v5 raw-answer training on GPU3, then launched the formal raw-answer CoT v5 run from base.
+
+Formal run:
+
+- Run dir: `runs/cot_v5_gpu3_from_base_raw/`
+- PID: `3990225`
+- Log: `runs/cot_v5_gpu3_from_base_raw/cot_v5_gpu3_from_base_raw.log`
+- W&B: `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft/runs/yzlj23lm`
+- Train CSV: `data/train_plus_synthetic_v5.csv`
+- Config: single GPU3, `MAX_SEQ_LEN=896`, `LORA_RANK=16`, `GRAD_ACCUM_STEPS=8`, response-only loss, raw answers inside `\boxed{...}`
+- Checkpoints: every 50 optimizer steps under `runs/cot_v5_gpu3_from_base_raw/checkpoints/`
+- Eval: every 200 optimizer steps on 48 validation samples under `runs/cot_v5_gpu3_from_base_raw/eval/`
+
+Observed after launch: model loaded, LoRA attached (`440,069,120` trainable params), dataset prepared (`21000` rows, `19748` with CoT), and training entered epoch 0. Next action is to monitor first checkpoint at step 50 and first eval at step 200. Do **not** resume from old escaped-format CoT checkpoints.
 
 ## 官方评测标准 (Official Metric — 来自 Kaggle,请勿改动)
 
@@ -170,8 +288,45 @@ smoke(GPU 2,v4 数据,thinking eval):格式正确(CoT 在 think 块内)、模型
 - 最小修复已改为训练阶段 `TRAIN_USE_CACHE=0`(默认),eval/generate 仍显式 `use_cache=True`;这不是 gradient checkpointing/重算。已启动 30 分钟 GPU 5/6 watcher,PID `3738651`,日志 `runs/cot_v4_ddp56_from_base_resume_nocache.watch.log`;当 GPU 5/6 无超过 2GB 的 compute 进程时,会自动从 `checkpoint-000050` 续跑到 `runs/cot_v4_ddp56_from_base_resume_nocache/`。当前等待外部进程:GPU5 `2230459`约 4.8GB,GPU6 `2221794`约 21GB。
 - 按“固定 max_seq_len 截断”方案处理长样本:修改 `SFTDataset` 的超长样本路径,保留 prompt 和最终 `</think>...\\boxed{answer}` 尾部,只截断中间 CoT。验证最长 `train_idx=784` 从 `922` tokens 被压到 `896`,且 `\\boxed{knight follows in garden}` 仍保留。未启用 gradient checkpointing/重算。
 - 直接用 GPU5 跑 `runs/cot_v4_gpu5_resume_trunc896/` 仍在 batch 203 OOM,但当时 GPU5 还有外部 PID `2230459` 占 `4.66GB`,训练只差 `20MB`;同位置样本长度仅 `243` tokens,不是长 CoT 本身。GPU5 当前资源冲突不适合硬跑 896。
-- 已按用户要求切到 GPU3 单卡续训:`runs/cot_v4_gpu3_resume_trunc896/`,PID `2525161`,W&B `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft/runs/ec3arh9x`,从 `checkpoint-000050` 续训,`MAX_SEQ_LEN=896`,`GRAD_ACCUM_STEPS=8`,`TRAIN_USE_CACHE=0`,GPU3 仅有小常驻进程。已越过 GPU5 崩溃点 batch 203,观察到 batch 300+ 正常训练;单卡顺序中 922-token 样本位于 batch 782,需继续观察是否能越过。
+- 已按用户要求切到 GPU3 单卡续训:`runs/cot_v4_gpu3_resume_trunc896/`,PID `2525161`,W&B `https://wandb.ai/yaozhonger7-shantou-university/llm-infer-sft/runs/ec3arh9x`,从 `checkpoint-000050` 续训,`MAX_SEQ_LEN=896`,`GRAD_ACCUM_STEPS=8`,`TRAIN_USE_CACHE=0`,GPU3 仅有小常驻进程。已越过 GPU5 崩溃点 batch 203,观察到 batch 300+ 正常训练;单卡顺序中 922-token 样本位于 batch 782。该旧 escaped-format v4 训练后来已停止,不要再继续它;当前正式方向是 raw-answer v5。
 - 重要:这是**首个 thinking 模式 + 官方 metric 对齐**的 run,其 eval 数才是与排行榜可比的真实基线;不要再拿它和历史 skip-thinking eval 直接比。
+
+## boxed 转义与官方 metric 对齐修复 + 全量 eval (2026-06-05 16:58 CST)
+
+### 根因复核(已用实测样本证实)
+
+CoT run step-1000 eval 里有一类"模型其实算对了却判错"的样本,根因是**训练目标对答案做了转义**:`escape_boxed_answer` 把答案里的 `\ { }` 写成 `\\ \{ \}` 再放进 `\boxed{}`。模型忠实学会输出转义形态,但 `evaluate()` 用的是**官方 `official_metric.extract_final_answer`,它不做 unescape**,直接按字面比对 → 判错。
+
+- 实测样本:gold `\![<_`,模型 decoded 推理过程正确(`... to get '\![<_'`),但 `\boxed{\\![<_}` 是双反斜杠 → 官方提取 `\\![<_` ≠ gold。**线上排行榜用的就是官方 metric,这分是真丢的。**
+- `official_metric.py` 的 docstring 明确写了官方期望**原样字面**写法(`the model writes them literally, producing \boxed{}52} for "}52"`)——转义方案与官方设计直接冲突。
+
+### 修复(`train_sft.py`,已 `py_compile` + 单测验证)
+
+- **去掉转义**:`format_answer_text`、`format_example` 现在把**原始答案**写进 `\boxed{...}`。模型输出的字符 = 官方提取回来的字符,逐字一致。
+- **本地解析对齐官方**:删除旧的 `escape_boxed_answer`/`unescape_boxed_answer`/`find_boxed_spans`(基于括号深度且把 `\` 当转义符,会破坏原始答案)。新增 `_boxed_spans_official`,与官方"每个 `\boxed{` 取到下一个 `\boxed{` 或文末前最后一个 `}`"完全同构;`extract_boxed`(仅用作 boxed 覆盖率诊断)改用它且不 unescape。
+- **新终止符**:生成早停 `StopAfterBoxClose` 与 `truncate_after_first_boxed` 改用 `}.` 作为答案终止符(训练目标恒以 `}.` 收尾)。**全数据集 0 条答案包含子串 `}.`**,故对含不平衡括号的答案(如 `+}`、`{17`)也安全;旧的括号深度扫描会把这些答案截断。
+- `test_boxed_answer.py` 重写,断言原始答案(含 `{ } \` 与不平衡括号)经 `\boxed{ans}.` 后能被**官方 metric** 逐字取回;5 个用例全过。
+
+### 量化依据(`data/train_plus_synthetic_v4.csv`,21000 行)
+
+- 含 `{` 或 `}` 的答案:**548**;含 `\` 的:**287**(几乎全在 equation 族)。
+- 原始答案 `\boxed{ans}.` → **官方提取器:0 处不一致**(完美往返);→ 旧的括号深度首闭合:**527 处被破坏**。证实"原始写法 + 官方贪婪提取"才是对的。
+
+### 影响与后续
+
+- **现有 CoT 模型/checkpoint 是用旧(转义)格式训练的**,仍会输出转义字符;此修复**只惠及之后重训/续训的 run**。建议用修复后的代码重训(或从 base 重训 CoT v4),以拿回 equation 及含括号/反斜杠答案的可解子集分数。
+- equation/bit 的官方天花板(可解率 3%/5%)不变;此修复只捞回"算对了被转义判错"的那部分,主要落在 equation 可解子集。
+
+### 全量 official eval(进行中)
+
+为确立真实基线(48 样本 val 噪声太大、且偏难),对 **best CoT checkpoint = `checkpoints/checkpoint-001000`(step-1000,48-val `0.5208` 为该 run 最佳)** 跑全量 official eval:
+
+- 配置:`ADAPTER_DIR=.../checkpoints/checkpoint-001000`、`TRAIN_CSV=data/train_plus_synthetic_v4.csv`、`VAL_MAX_SAMPLES=0`(全量,**v4 全 val = 2097 条**,注意不是 v2 的 1530)、`INFERENCE_FINAL_ANSWER_PREFILL=0`(thinking 模式)、`EVAL_MAX_NEW_TOKENS=1024`、`INFERENCE_STOP_AFTER_BOXED=1`、官方 metric。
+- **2 卡数据并行**(应用户要求用 GPU5+6 提速):`eval_adapter.py` 新增 `NUM_SHARDS`/`SHARD_INDEX`,用 `gather_every` 把 val 交错二分。为腾出 GPU5,先 SIGTERM 了 GPU5 上另一 CoT 训练 `cot_v4_gpu5_resume_trunc896`(PID 1383983,step 479,**可从 `checkpoint-000450` 续训**)。
+  - shard0:GPU5,PID `1636773`,1049 条,日志/结果 `eval/cot_step1000_fullval_official_s0.log` / `eval/eval_cot_step1000_fullval_official_s0_summary.json`。
+  - shard1:GPU6,PID `1636775`,1048 条,日志/结果 `..._s1.log` / `..._s1_summary.json`。
+- 预计 ~3–5h(2 卡并行;thinking 模式逐条生成,bit/equation 常跑满 token 预算)。两半跑完后合并两个 jsonl 计总分 + 分 family。**结果待回填。**
+- 重要:此 eval 评的是**当前(转义格式)模型**,因此**包含转义罚分**,是当前真实基线;转义修复的增益要等用新代码重训后才体现。
 
 ## Active Issue
 
@@ -353,4 +508,8 @@ Validation results:
 | 2026-06-03 10:17:43 CST | The no-brace v2 run has produced intermediate eval results. Latest finished eval is `eval_step-1800` with `50/100` accuracy and `100/100` boxed rate; `step-1600` is the current best checkpoint at `50/100`. Eval artifacts are under `runs/synthetic_v2_no_brace_response_only_ddp_10000/eval/`, and training is still ongoing. |
 | 2026-06-03 16:17:12 CST | Fixed the stale brace-answer project notes and added `test_boxed_answer.py` to lock brace-safe boxed escaping/parsing. Verified `py_compile` and `python -m unittest test_boxed_answer.py`. A previous v3 2-GPU warm-start attempt at `runs/synthetic_v3_warmstart_v2best_600/` OOMed early; a corrected single-GPU 6 smoke at `runs/brace_safe_v3_smoke_gpu6_retry/` completed 2 optimizer steps, checkpointing, eval, adapter save, and `submission.zip` packaging with `2/2` boxed rate. GPU 6 is free again after the smoke. |
 | 2026-06-03 16:25:45 CST | Started the requested v3 training on GPU 6: `runs/synthetic_v3_gpu6_v2best_ckpt50/`, PID `2486933`, W&B `upzx02so`, warm-starting from v2 no-brace `adapter_best`, with checkpoint every 50 steps and eval every 100 steps. The run entered training and reached optimizer step 7 without OOM. Started watcher PID `2707788` to wait for GPU 5 full-val eval PID `1154476`, then stop the single-GPU run after a complete checkpoint and launch 5/6 DDP at `runs/synthetic_v3_ddp56_from_gpu6_latest/`. |
+| 2026-06-05 16:58:00 CST | Fixed boxed/official-metric misalignment in `train_sft.py`: training now writes RAW answers into `\boxed{...}` (no `\\`/`\{`/`\}` escaping), and local extract/truncate/stop are aligned to the official greedy extractor with a `}.` terminator (no answer contains `}.`, so unbalanced-brace answers like `+}`/`{17` survive). Measured: raw target → official extractor 0/21000 mismatches vs 527 for the old depth scan; 548 answers contain braces, 287 contain backslash. Rewrote `test_boxed_answer.py` (5 tests pass) + `py_compile`. Existing CoT checkpoints were trained with the old escaped format, so the fix only benefits future re-training. |
+| 2026-06-05 16:58:30 CST | Launched full-val official eval of best CoT checkpoint `checkpoints/checkpoint-001000` (step-1000, 48-val best 0.5208). Full v4 val = 2097 rows, thinking mode (`INFERENCE_FINAL_ANSWER_PREFILL=0`, `EVAL_MAX_NEW_TOKENS=1024`), official metric. Baselines the CURRENT (escaped) model so it includes the escaping penalty. |
+| 2026-06-05 17:20:00 CST | Per request, switched the full-val eval to 2-GPU data parallel on GPU5+6. Added `NUM_SHARDS`/`SHARD_INDEX` (gather_every split) to `eval_adapter.py`. Stopped (SIGTERM) the other CoT training on GPU5 `cot_v4_gpu5_resume_trunc896` (PID 1383983, step 479, resumable from `checkpoint-000450`) to free the card. Eval now: shard0 GPU5 PID `1636773` (1049 rows), shard1 GPU6 PID `1636775` (1048 rows); merge both jsonl when done. ETA ~3-5h. The old escaped-format GPU3 training `cot_v4_gpu3_resume_trunc896` was later stopped; do not continue it. |
+| 2026-06-05 18:58:00 CST | Launched formal raw-answer CoT v5 training from base on GPU3. Run root `runs/cot_v5_gpu3_from_base_raw/`, PID `3990225`, W&B `yzlj23lm`, train CSV `data/train_plus_synthetic_v5.csv`. Verified it loaded the model, attached LoRA, entered training, and reached optimizer step 2 with finite loss. First checkpoint is step 50; first eval is step 200. |
 | 2026-06-03 17:35:24 CST | GPU 5 full-val v2 best eval completed: `747/1530 = 0.4882` accuracy, `1528/1530 = 0.9987` boxed. Watcher stopped the GPU 6 single run after `checkpoint-000050` and launched v3 DDP on GPUs 5/6 under `runs/synthetic_v3_ddp56_from_gpu6_latest/`. Patched `train_sft.py` to restore CUDA RNG states as CPU ByteTensors and tolerate optimizer/scheduler restore mismatch; relaunched DDP outside the sandbox. The active DDP run resumed at `global_step=50` and was observed training at `step=59`. |

@@ -1,0 +1,158 @@
+{
+  "input": "data/train_plus_synthetic_v4.csv",
+  "output": "data/train_plus_synthetic_v5.csv",
+  "extern_root": "extern/nemotron",
+  "target_families": [
+    "bit_manipulation",
+    "equation_symbol_transformation",
+    "text_decryption"
+  ],
+  "total_rows": 21000,
+  "total_has_cot": 19748,
+  "total_cot_rate": 0.9403809523809524,
+  "stats": {
+    "external_imported": 3574,
+    "external_filled_empty": 2839,
+    "external_wrong": 1159,
+    "kept_existing_cot": 16172,
+    "external_replaced_existing": 735
+  },
+  "by_family": {
+    "bit_manipulation": {
+      "external_imported": 1364,
+      "external_filled_empty": 1278,
+      "external_wrong": 238,
+      "external_replaced_existing": 86,
+      "kept_existing_cot": 3000
+    },
+    "equation_symbol_transformation": {
+      "external_wrong": 921,
+      "external_imported": 634,
+      "external_filled_empty": 590,
+      "external_replaced_existing": 44,
+      "kept_existing_cot": 2905
+    },
+    "gravity_formula": {
+      "kept_existing_cot": 4597
+    },
+    "numeral_system": {
+      "kept_existing_cot": 2076
+    },
+    "text_decryption": {
+      "external_imported": 1576,
+      "external_filled_empty": 971,
+      "external_replaced_existing": 605,
+      "kept_existing_cot": 1500
+    },
+    "unit_conversion": {
+      "kept_existing_cot": 2094
+    }
+  },
+  "by_extern_category": {
+    "bit_manipulation": {
+      "total_seen": 1602,
+      "imported": 1364,
+      "wrong": 238
+    },
+    "cipher": {
+      "total_seen": 1576,
+      "imported": 1576
+    },
+    "cryptarithm_deduce": {
+      "total_seen": 659,
+      "wrong": 600,
+      "imported": 59
+    },
+    "cryptarithm_guess": {
+      "total_seen": 164,
+      "wrong": 151,
+      "imported": 13
+    },
+    "equation_numeric_deduce": {
+      "total_seen": 596,
+      "wrong": 55,
+      "imported": 541
+    },
+    "equation_numeric_guess": {
+      "total_seen": 136,
+      "wrong": 115,
+      "imported": 21
+    }
+  },
+  "examples": {
+    "bit_manipulation|external_wrong": [
+      {
+        "id": "000b53cf",
+        "extern_category": "bit_manipulation",
+        "extern_status": "hypothesis_formed",
+        "gold": "01000011",
+        "pred": "00011111"
+      },
+      {
+        "id": "00890aff",
+        "extern_category": "bit_manipulation",
+        "extern_status": "hypothesis_formed",
+        "gold": "01110000",
+        "pred": "01111100"
+      },
+      {
+        "id": "012fb81b",
+        "extern_category": "bit_manipulation",
+        "extern_status": "hypothesis_formed",
+        "gold": "10000100",
+        "pred": "10010100"
+      },
+      {
+        "id": "01e09228",
+        "extern_category": "bit_manipulation",
+        "extern_status": "hypothesis_formed",
+        "gold": "10010101",
+        "pred": "10111001"
+      },
+      {
+        "id": "0245b9bb",
+        "extern_category": "bit_manipulation",
+        "extern_status": "hypothesis_formed",
+        "gold": "00001001",
+        "pred": "00011001"
+      }
+    ],
+    "equation_symbol_transformation|external_wrong": [
+      {
+        "id": "00457d26",
+        "extern_category": "cryptarithm_deduce",
+        "extern_status": "rule_unknown",
+        "gold": "@&",
+        "pred": "[[!'"
+      },
+      {
+        "id": "00c032a8",
+        "extern_category": "cryptarithm_deduce",
+        "extern_status": "rule_unknown",
+        "gold": "\\^?",
+        "pred": "))\\)"
+      },
+      {
+        "id": "00d8b3db",
+        "extern_category": "equation_numeric_deduce",
+        "extern_status": "hypothesis_formed",
+        "gold": "17/",
+        "pred": "17"
+      },
+      {
+        "id": "012cab1f",
+        "extern_category": "cryptarithm_deduce",
+        "extern_status": "rule_unknown",
+        "gold": "|@{",
+        "pred": "{`(&"
+      },
+      {
+        "id": "017a871e",
+        "extern_category": "cryptarithm_deduce",
+        "extern_status": "hypothesis_formed",
+        "gold": "\\:",
+        "pred": "#!\"^"
+      }
+    ]
+  }
+}
