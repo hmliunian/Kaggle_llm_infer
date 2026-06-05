@@ -177,82 +177,70 @@ def classify_prompt(prompt: str) -> str:
 
 
 # ─── Answer Extraction ────────────────────────────────────────────────────────
-def escape_boxed_answer(answer) -> str:
-    text = str(answer)
-    return text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+# Answers are written into \boxed{...} RAW (no escaping) so that the characters
+# the model emits are byte-for-byte what the official grader extracts back. The
+# official metric (official_metric.extract_final_answer) takes each \boxed{ up to
+# the LAST '}' before the next \boxed{ (or end of text), so literal '{', '}', and
+# '\' in answers round-trip without escaping. Escaping was previously applied and
+# taught the model to emit doubled/backslashed characters that the grader scored as
+# wrong (e.g. answer '\![<_' became '\\![<_'); removing it recovers those points.
+_BOXED_OPEN = "\\boxed{"
+
+# The trained answer terminator is "}." (closing brace immediately followed by a
+# period). No gold answer contains the substring "}.", so it unambiguously marks
+# the end of the boxed answer even for answers with unbalanced braces (e.g. '+}',
+# '{17'), which a brace-depth scan would truncate.
+_ANSWER_TERMINATOR = "}."
 
 
-def unescape_boxed_answer(answer: str) -> str:
-    chars = []
-    i = 0
-    while i < len(answer):
-        ch = answer[i]
-        if ch == "\\" and i + 1 < len(answer) and answer[i + 1] in {"\\", "{", "}"}:
-            chars.append(answer[i + 1])
-            i += 2
-            continue
-        chars.append(ch)
-        i += 1
-    return "".join(chars)
+def _boxed_spans_official(text: str):
+    """Segment \\boxed{...} spans exactly like official_metric.extract_final_answer.
 
-
-def find_boxed_spans(text: str):
+    Returns a list of (open_index, content) where content runs from just after a
+    \\boxed{ to the last '}' before the next \\boxed{ (or end of text).
+    """
+    opens = [m.start() for m in re.finditer(r"\\boxed\{", text)]
     spans = []
-    marker = "\\boxed{"
-    search_from = 0
-    while True:
-        start = text.find(marker, search_from)
-        if start < 0:
-            return spans
-
-        content_start = start + len(marker)
-        content_chars = []
-        depth = 1
-        escaped = False
-        i = content_start
-        while i < len(text):
-            ch = text[i]
-            if escaped:
-                content_chars.append(ch)
-                escaped = False
-            elif ch == "\\":
-                content_chars.append(ch)
-                escaped = True
-            elif ch == "{":
-                depth += 1
-                content_chars.append(ch)
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    spans.append(
-                        {
-                            "start": start,
-                            "end": i + 1,
-                            "content": "".join(content_chars),
-                        }
-                    )
-                    search_from = i + 1
-                    break
-                content_chars.append(ch)
-            else:
-                content_chars.append(ch)
-            i += 1
-        else:
-            search_from = content_start
+    for i, start in enumerate(opens):
+        seg_start = start + len(_BOXED_OPEN)
+        seg_end = opens[i + 1] if i + 1 < len(opens) else len(text)
+        segment = text[seg_start:seg_end]
+        last_brace = segment.rfind("}")
+        content = segment[:last_brace] if last_brace != -1 else segment
+        spans.append((start, content))
+    return spans
 
 
 def truncate_after_first_boxed(text: str) -> str:
-    spans = find_boxed_spans(text)
-    if not spans:
+    """Trim trailing rambling after the boxed answer's "}." terminator.
+
+    Keeps everything up to and including the closing '}' of the last \\boxed{ whose
+    content is terminated by "}.". Returns the text unchanged when no terminator is
+    present, so the official grader still sees a complete box.
+    """
+    open_idx = text.rfind(_BOXED_OPEN)
+    if open_idx < 0:
         return text
-    return text[: spans[0]["end"]]
+    term = text.find(_ANSWER_TERMINATOR, open_idx + len(_BOXED_OPEN))
+    if term < 0:
+        return text
+    return text[: term + 1]  # include the '}', drop the trailing '.' and any ramble
 
 
 def extract_boxed(text: str):
-    spans = find_boxed_spans(text)
-    if spans:
-        return unescape_boxed_answer(spans[-1]["content"]).strip()
-    return None
+    """Boxed-coverage diagnostic: last non-empty \\boxed{...} content, or None.
+
+    Uses the official greedy (to-last-'}') segmentation and does NOT unescape, so
+    it reflects exactly what the grader reads. Returns None when no \\boxed{ exists,
+    keeping `has_boxed` an honest box-presence signal.
+    """
+    spans = _boxed_spans_official(text)
+    if not spans:
+        return None
+    non_empty = [content.strip() for _, content in spans if content.strip()]
+    if non_empty:
+        return non_empty[-1]
+    return spans[-1][1].strip()
 
 
 def numeric_equal(pred, gold, rel_tol=1e-3, abs_tol=1e-4):
@@ -266,11 +254,11 @@ def numeric_equal(pred, gold, rel_tol=1e-3, abs_tol=1e-4):
 
 # ─── Data Formatting ─────────────────────────────────────────────────────────
 def format_example(tokenizer, prompt, answer):
-    escaped_answer = escape_boxed_answer(answer)
+    answer_text = str(answer)
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
-        {"role": "assistant", "content": f"The final answer is \\boxed{{{escaped_answer}}}."},
+        {"role": "assistant", "content": f"The final answer is \\boxed{{{answer_text}}}."},
     ]
     try:
         return tokenizer.apply_chat_template(
@@ -280,7 +268,7 @@ def format_example(tokenizer, prompt, answer):
         return (
             f"System: {SYSTEM_PROMPT}\n\n"
             f"User:\n{prompt}\n\n"
-            f"Assistant:\nThe final answer is \\boxed{{{escaped_answer}}}."
+            f"Assistant:\nThe final answer is \\boxed{{{answer_text}}}."
         )
 
 
@@ -290,7 +278,7 @@ def format_answer_text(answer, cot=""):
     # so the supervised target is "<think>\n{cot}\n</think>\nThe final answer is ...".
     cot = (cot or "").strip()
     think = f"{cot}\n" if cot else ""
-    return f"{think}{FINAL_ANSWER_PREFILL_TEXT}{escape_boxed_answer(answer)}}}."
+    return f"{think}{FINAL_ANSWER_PREFILL_TEXT}{str(answer)}}}."
 
 
 def format_inference_prompt(tokenizer, prompt):
@@ -326,7 +314,12 @@ class StopAfterBoxClose(StoppingCriteria):
         if generated.numel() == 0:
             return False
         text = self.prefix + self.tokenizer.decode(generated, skip_special_tokens=True)
-        return bool(find_boxed_spans(text))
+        open_idx = text.rfind(_BOXED_OPEN)
+        if open_idx < 0:
+            return False
+        # Stop once the trained terminator "}." follows the boxed opening; safe for
+        # answers with unbalanced braces because no gold answer contains "}.".
+        return _ANSWER_TERMINATOR in text[open_idx + len(_BOXED_OPEN):]
 
 
 def generate_completion(model, tokenizer, prompt, max_new_tokens=128, use_cache=True):
@@ -406,6 +399,55 @@ class SFTDataset(Dataset):
     def __len__(self):
         return len(self.rows)
 
+    def _tokenize_with_preserved_final_answer(self, prompt_text, answer, cot):
+        cot = (cot or "").strip()
+        final_text = format_answer_text(answer, "")
+        cot_text = f"{cot}\n" if cot else ""
+
+        prompt_enc = self.tokenizer(
+            prompt_text,
+            truncation=True,
+            max_length=self.max_length,
+            padding=False,
+            return_tensors=None,
+        )
+        final_enc = self.tokenizer(
+            final_text,
+            add_special_tokens=False,
+            padding=False,
+            return_tensors=None,
+        )
+        cot_enc = self.tokenizer(
+            cot_text,
+            add_special_tokens=False,
+            padding=False,
+            return_tensors=None,
+        )
+
+        prompt_ids = prompt_enc["input_ids"]
+        prompt_mask = prompt_enc.get("attention_mask", [1] * len(prompt_ids))
+        final_ids = final_enc["input_ids"]
+        cot_ids = cot_enc["input_ids"]
+
+        if len(prompt_ids) + len(final_ids) > self.max_length:
+            prompt_budget = max(self.max_length - len(final_ids), 0)
+            prompt_ids = prompt_ids[-prompt_budget:] if prompt_budget else []
+            prompt_mask = prompt_mask[-prompt_budget:] if prompt_budget else []
+
+        cot_budget = max(self.max_length - len(prompt_ids) - len(final_ids), 0)
+        cot_ids = cot_ids[:cot_budget]
+
+        input_ids = prompt_ids + cot_ids + final_ids
+        attention_mask = prompt_mask + [1] * (len(cot_ids) + len(final_ids))
+        labels = [-100] * len(prompt_ids) + input_ids[len(prompt_ids):].copy()
+        if all(label == -100 for label in labels):
+            labels = input_ids.copy()
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
+
     def __getitem__(self, idx):
         row = self.rows[idx]
         prompt_text, answer_text = format_training_parts(
@@ -417,11 +459,24 @@ class SFTDataset(Dataset):
         text = prompt_text + answer_text
         enc = self.tokenizer(
             text,
-            truncation=True,
-            max_length=self.max_length,
+            truncation=False,
             padding=False,
             return_tensors=None,
         )
+        if (
+            len(enc["input_ids"]) > self.max_length
+            and RESPONSE_ONLY_LOSS
+            and TRAIN_FINAL_ANSWER_PREFILL
+            and prompt_text
+        ):
+            return self._tokenize_with_preserved_final_answer(
+                prompt_text,
+                row["answer"],
+                row.get("cot") or "",
+            )
+        if len(enc["input_ids"]) > self.max_length:
+            enc["input_ids"] = enc["input_ids"][: self.max_length]
+            enc["attention_mask"] = enc["attention_mask"][: self.max_length]
         if RESPONSE_ONLY_LOSS and prompt_text:
             prompt_enc = self.tokenizer(
                 prompt_text,

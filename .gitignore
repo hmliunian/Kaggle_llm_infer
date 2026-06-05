@@ -21,7 +21,7 @@ __pycache__/
 *.pid
 
 # Data generated or downloaded locally
-data/
+
 
 # Training, evaluation, and model artifacts
 checkpoints/
