@@ -104,6 +104,14 @@ WARMUP_RATIO = 0.03
 # Validation
 VAL_RATIO = 0.1
 VAL_MAX_SAMPLES = env_int("VAL_MAX_SAMPLES", 2 if SMOKE_MODE else 100)
+# Evaluate only on the eval split of the BASE training data (official rows).
+# When on and the combined dataset carries a `source` column, the val split is
+# carved out of BASE_SOURCE rows only, and all non-base (synthetic) rows go to
+# training. This keeps the eval distribution aligned with the leaderboard instead
+# of being inflated by easy synthetic rows. No-op when there is no `source`
+# column (e.g. pure data/train.csv), since every row is already base.
+EVAL_BASE_ONLY = env_bool("EVAL_BASE_ONLY", True)
+BASE_SOURCE = os.environ.get("BASE_SOURCE", "official_train").strip()
 EVAL_EVERY_STEPS = env_int("EVAL_EVERY_STEPS", 1 if SMOKE_MODE else 100)
 EVAL_MAX_NEW_TOKENS = env_int("EVAL_MAX_NEW_TOKENS", 16 if SMOKE_MODE else 128)
 EVAL_OUTPUT_DIR = os.environ.get(
@@ -150,6 +158,40 @@ SYSTEM_PROMPT = (
     "Infer the hidden rule from the examples and answer the final query. "
     "Always put only the final answer inside \\boxed{}."
 )
+
+# Align the local prompt with the official Kaggle harness so training and local
+# eval see EXACTLY what the leaderboard feeds at submission time: no system prompt,
+# and the official boxed instruction appended to the user content (rendered with
+# enable_thinking=True). When this is off, the legacy SYSTEM_PROMPT path is used.
+OFFICIAL_PROMPT_ALIGN = env_bool("OFFICIAL_PROMPT_ALIGN", True)
+
+# Verbatim suffix the official harness appends to each user prompt
+# (item.prompt + this string). Do not edit; it must match the grader's input.
+OFFICIAL_BOXED_INSTRUCTION = (
+    "\nPlease put your final answer inside `\\boxed{}`. "
+    "For example: `\\boxed{your answer}`"
+)
+
+
+def build_user_content(prompt):
+    if OFFICIAL_PROMPT_ALIGN:
+        return f"{prompt}{OFFICIAL_BOXED_INSTRUCTION}"
+    return prompt
+
+
+def build_chat_messages(prompt, assistant=None):
+    """Chat messages matching the official prompt when OFFICIAL_PROMPT_ALIGN is on.
+
+    Official: no system role; user = prompt + boxed instruction. Legacy: SYSTEM_PROMPT
+    plus the raw prompt. `assistant` appends a supervised assistant turn for training.
+    """
+    messages = []
+    if not OFFICIAL_PROMPT_ALIGN:
+        messages.append({"role": "system", "content": SYSTEM_PROMPT})
+    messages.append({"role": "user", "content": build_user_content(prompt)})
+    if assistant is not None:
+        messages.append({"role": "assistant", "content": assistant})
+    return messages
 FINAL_ANSWER_PREFILL_TEXT = os.environ.get(
     "FINAL_ANSWER_PREFILL_TEXT",
     "</think>\nThe final answer is \\boxed{",
@@ -255,20 +297,18 @@ def numeric_equal(pred, gold, rel_tol=1e-3, abs_tol=1e-4):
 # ─── Data Formatting ─────────────────────────────────────────────────────────
 def format_example(tokenizer, prompt, answer):
     answer_text = str(answer)
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-        {"role": "assistant", "content": f"The final answer is \\boxed{{{answer_text}}}."},
-    ]
+    assistant = f"The final answer is \\boxed{{{answer_text}}}."
+    messages = build_chat_messages(prompt, assistant=assistant)
     try:
         return tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=False,
         )
     except Exception:
+        sys_txt = "" if OFFICIAL_PROMPT_ALIGN else f"System: {SYSTEM_PROMPT}\n\n"
         return (
-            f"System: {SYSTEM_PROMPT}\n\n"
-            f"User:\n{prompt}\n\n"
-            f"Assistant:\nThe final answer is \\boxed{{{answer_text}}}."
+            f"{sys_txt}"
+            f"User:\n{build_user_content(prompt)}\n\n"
+            f"Assistant:\n{assistant}"
         )
 
 
@@ -282,16 +322,21 @@ def format_answer_text(answer, cot=""):
 
 
 def format_inference_prompt(tokenizer, prompt):
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
+    messages = build_chat_messages(prompt)
     try:
+        return tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True,
+            enable_thinking=True,
+        )
+    except TypeError:
+        # Template/tokenizer that doesn't accept enable_thinking: keep the chat
+        # template (thinking is already on via add_generation_prompt for this model).
         return tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True,
         )
     except Exception:
-        return f"System: {SYSTEM_PROMPT}\n\nUser:\n{prompt}\n\nAssistant:\n"
+        sys_txt = "" if OFFICIAL_PROMPT_ALIGN else f"System: {SYSTEM_PROMPT}\n\n"
+        return f"{sys_txt}User:\n{build_user_content(prompt)}\n\nAssistant:\n"
 
 
 def format_training_parts(tokenizer, prompt, answer, cot=""):
@@ -387,6 +432,40 @@ def stratified_split(df, val_ratio=0.1, seed=42):
     train_df = pl.DataFrame(train_rows)
     val_df = pl.DataFrame(val_rows)
     return train_df, val_df
+
+
+def split_train_val(full_df, val_ratio=VAL_RATIO, seed=SEED):
+    """Stratified train/val split honoring EVAL_BASE_ONLY.
+
+    When EVAL_BASE_ONLY is on and the dataframe carries a `source` column with
+    non-base rows, the val split is carved out of BASE_SOURCE rows only and every
+    non-base (synthetic) row is added to train, so evaluation runs only on the
+    eval split of the base training data. Otherwise this is a plain stratified
+    split of the whole dataframe. Shared by training and eval_adapter so both see
+    the SAME val set.
+    """
+    if (
+        EVAL_BASE_ONLY
+        and "source" in full_df.columns
+        and full_df.filter(pl.col("source") != BASE_SOURCE).height > 0
+    ):
+        base_df = full_df.filter(pl.col("source") == BASE_SOURCE)
+        extra_train_df = full_df.filter(pl.col("source") != BASE_SOURCE)
+        if base_df.height == 0:
+            log_main(
+                f"  [EVAL_BASE_ONLY] no rows with source=={BASE_SOURCE!r}; "
+                f"falling back to splitting the full dataset"
+            )
+            return stratified_split(full_df, val_ratio=val_ratio, seed=seed)
+        train_df, val_df = stratified_split(base_df, val_ratio=val_ratio, seed=seed)
+        extra_train_df = extra_train_df.select(train_df.columns)
+        train_df = pl.concat([train_df, extra_train_df], how="vertical_relaxed")
+        log_main(
+            f"  [EVAL_BASE_ONLY] val split from base source={BASE_SOURCE!r} only "
+            f"({base_df.height} base rows); {extra_train_df.height} non-base rows added to train"
+        )
+        return train_df, val_df
+    return stratified_split(full_df, val_ratio=val_ratio, seed=seed)
 
 
 # ─── Dataset ─────────────────────────────────────────────────────────────────
@@ -1094,6 +1173,7 @@ def main():
     log_main(f"  MAX_SEQ_LEN={MAX_SEQ_LEN}, BATCH_SIZE={BATCH_SIZE}, GRAD_ACCUM_STEPS={GRAD_ACCUM_STEPS}")
     log_main(f"  NUM_EPOCHS={NUM_EPOCHS}, MAX_TRAIN_STEPS={MAX_TRAIN_STEPS}, TRAIN_ROW_LIMIT={TRAIN_ROW_LIMIT}")
     log_main(f"  VAL_MAX_SAMPLES={VAL_MAX_SAMPLES}, EVAL_EVERY_STEPS={EVAL_EVERY_STEPS}, EVAL_MAX_NEW_TOKENS={EVAL_MAX_NEW_TOKENS}")
+    log_main(f"  EVAL_BASE_ONLY={EVAL_BASE_ONLY}, BASE_SOURCE={BASE_SOURCE!r}")
     log_main(f"  EVAL_OUTPUT_DIR={EVAL_OUTPUT_DIR}")
     log_main(f"  EVAL_SAVE_DETAILS={EVAL_SAVE_DETAILS}")
     log_main(
@@ -1181,7 +1261,7 @@ def main():
         log_main(f"    {k}: {v}")
 
     log_main(f"\n[2/8] Stratified train/val split ({1-VAL_RATIO:.0%}/{VAL_RATIO:.0%}) ...")
-    train_df, val_df = stratified_split(full_df, val_ratio=VAL_RATIO, seed=SEED)
+    train_df, val_df = split_train_val(full_df, val_ratio=VAL_RATIO, seed=SEED)
     if TRAIN_ROW_LIMIT > 0 and len(train_df) > TRAIN_ROW_LIMIT:
         train_df = train_df.head(TRAIN_ROW_LIMIT)
         log_main(f"  Smoke train row limit applied: {len(train_df)}")

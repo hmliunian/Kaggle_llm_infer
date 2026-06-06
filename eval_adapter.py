@@ -53,8 +53,8 @@ def main():
             "answer": pl.String,
         },
     )
-    _, val_df = train_sft.stratified_split(full_df, val_ratio=train_sft.VAL_RATIO, seed=train_sft.SEED)
-    print(f"  Total rows: {len(full_df)}, Val rows: {len(val_df)}")
+    _, val_df = train_sft.split_train_val(full_df, val_ratio=train_sft.VAL_RATIO, seed=train_sft.SEED)
+    print(f"  Total rows: {len(full_df)}, Val rows: {len(val_df)} (EVAL_BASE_ONLY={train_sft.EVAL_BASE_ONLY}, BASE_SOURCE={train_sft.BASE_SOURCE!r})")
 
     # Optional data-parallel sharding: split the val set across processes/GPUs.
     # gather_every keeps the split deterministic and interleaved so each shard sees

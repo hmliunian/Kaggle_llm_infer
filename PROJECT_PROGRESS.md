@@ -1,6 +1,6 @@
 # Nemotron SFT Project Progress
 
-Last updated: 2026-06-05 18:58 CST
+Last updated: 2026-06-06 08:42 CST
 
 | Stage | Status | Evidence | Next action |
 | --- | --- | --- | --- |
@@ -11,7 +11,7 @@ Last updated: 2026-06-05 18:58 CST
 | M5 Full SFT baseline | Archived | Earlier smoke/mini/baseline/rank test artifacts were removed on 2026-06-02 to avoid mixing old-code results with the current response-only/DDP runs. | No action unless a fresh non-synthetic baseline is needed. |
 | M6 Synthetic data | Running | `synthetic_v1` produced 6,000 rows but later validation found solvability bugs. `synthetic_v2` fixed visibility/numeric consistency and produced the clean no-brace v2 DDP baseline through step-2600 eval (`48/100`, best observed step-1900 `51/100`, `100/100` boxed). `synthetic_v3` adds weak-family upweighting and brace-safe answer support; the active v3 run is now 5/6 DDP at `runs/synthetic_v3_ddp56_from_gpu6_latest/`, resumed from GPU 6 `checkpoint-000050`. | Let the v3 DDP run reach step-100 eval/checkpoint, then compare against the v2 no-brace baseline and full-val v2 best result. |
 | M7 RLVR/GRPO | Not started | No RL pipeline found. | Defer. |
-| M8 Solver-guided CoT v5 | Running | `data/train_plus_synthetic_v5.csv` has `19748/21000` CoT rows after verified imports from `extern/nemotron`; formal GPU3 run launched at `runs/cot_v5_gpu3_from_base_raw/`. | Monitor checkpoint-000050, then step-200 eval; do not resume old escaped-format checkpoints. |
+| M8 Solver-guided CoT v5 | Running | `runs/cot_v5_gpu3_from_base_raw/` training live (PID `3990225`, ~step 1000 / 42% of epoch 0); 48-val eval rising steps 200→1000 `0.396 / 0.479 / 0.500 / 0.458 / 0.542` (best **0.542** @ step-1000), boxed `0.83–0.98`. `EVAL_BASE_ONLY` official-only val (947) split + verified fast vLLM eval pipeline added. | Let training continue; use the vLLM path for stable full-official-val evals; select best checkpoint by full-val acc. |
 
 ## Planned bit/equation repair: solver-guided CoT v5 (2026-06-05 17:36 CST)
 
@@ -129,6 +129,42 @@ Formal run:
 - Eval: every 200 optimizer steps on 48 validation samples under `runs/cot_v5_gpu3_from_base_raw/eval/`
 
 Observed after launch: model loaded, LoRA attached (`440,069,120` trainable params), dataset prepared (`21000` rows, `19748` with CoT), and training entered epoch 0. Next action is to monitor first checkpoint at step 50 and first eval at step 200. Do **not** resume from old escaped-format CoT checkpoints.
+
+## v5 progress: training, official-only val split, verified vLLM eval (2026-06-06 08:42 CST)
+
+State of the formal raw-answer CoT v5 run (`runs/cot_v5_gpu3_from_base_raw/`, PID `3990225`, ~13.8h in):
+
+- Training is **still live**, at ~optimizer step `1000` (batch `8010/18903`, 42% of epoch 0 of 3); loss ~`0.01–0.04`, lr `9.68e-5`, `MAX_TRAIN_STEPS=10000`. Checkpoints every 50 steps under `checkpoints/`.
+- 48-sample eval (thinking mode, `INFERENCE_FINAL_ANSWER_PREFILL=0`) rises with training:
+
+  | step | 200 | 400 | 600 | 800 | 1000 |
+  | --- | --- | --- | --- | --- | --- |
+  | accuracy | 0.396 | 0.479 | 0.500 | 0.458 | **0.542** |
+  | boxed_rate | 0.875 | 0.833 | 0.979 | 0.833 | 0.917 |
+
+  New best is step-1000 `0.542`. The 48-row val is noisy — use the full official val via the vLLM path below for a stable read.
+
+### EVAL_BASE_ONLY: official-rows-only validation split
+
+To make local eval comparable to the leaderboard (which scores official-style rows), added an official-only val split:
+
+- `train_sft.split_train_val(...)` (new): when `EVAL_BASE_ONLY=1` (default) and the data has a `source` column, the val split is carved from `source == official_train` rows only (the **947** official val rows) and ALL synthetic rows go to train; otherwise it falls back to a plain stratified split. Training and `eval_adapter.py` share this so both see the SAME val set.
+- `eval_adapter.py` switched from `stratified_split` to `split_train_val` and now prints `EVAL_BASE_ONLY`/`BASE_SOURCE`.
+- New `scripts/eval_v5_latest_baseonly.sh`: 2-shard (GPU5/6) base-only eval of the latest v5 checkpoint, same config as the in-training eval (thinking mode, 512 new tokens, stop-after-boxed, official prompt alignment).
+
+### Fast vLLM eval pipeline (verified faithful)
+
+A batched **vLLM** eval path now exists, ~10–15× faster than the HF batch-1 `eval_adapter.py` (full 947-row official val ~12 min vs hours). Separate effort; key facts:
+
+- **Isolated env** `.venv-vllm` (vllm 0.22.1); the training `.venv` is untouched. The two `transformers` versions detokenize identically (verified), so cross-venv is safe.
+- **3 stages**, orchestrated by `scripts/vllm_eval_full.sh`: `vllm_build_prompts.py` (training venv — reuses `train_sft` split/prompt/tokenize, emits pre-tokenized ids) → `vllm_eval_run.py` (vLLM venv — greedy gen, no stop string) → `vllm_eval_score.py` (training venv — replicates `StopAfterBoxClose`'s first-`}.`-after-`\boxed{` cut, then scores with the official metric). Run: `VAL_PER_SHARD=0 GPU0=5 GPU1=6 bash scripts/vllm_eval_full.sh`.
+- **Honors `INFERENCE_FINAL_ANSWER_PREFILL`** (0 = thinking/CoT, 1 = answer-only), so it reproduces both HF eval modes exactly.
+- **H100 gotcha:** flashinfer JIT needs a ≥12.x nvcc — run vLLM with `CUDA_HOME=/usr/local/cuda-13.1 PATH=/usr/local/cuda-13.1/bin:$PATH TORCH_CUDA_ARCH_LIST=9.0a` (system `nvcc 11.5` can't target `sm_90a`). First run JIT-compiles kernels (slow), cached after.
+- **Faithfulness verified:** the adapter (r=16) targets Mamba `in_proj/out_proj` (23 layers) AND per-expert MoE `up_proj/down_proj` (128 experts, ~2967 modules). vLLM vs HF/PEFT on 32 rows: **100% correctness agreement on every sample where both produced a boxed answer**; the only aggregate gap is non-boxed "last-number" fallback noise.
+
+### CoT at inference: kept on for v5 (no separate A/B)
+
+Considered an A/B of CoT (`prefill=0`) vs answer-only (`prefill=1`) inference; concluded it is unnecessary. The v5 launch scripts already train with `TRAIN_FINAL_ANSWER_PREFILL=1` and eval/serve with `INFERENCE_FINAL_ANSWER_PREFILL=0` — i.e. CoT-at-inference is already the configured mode, and the rising eval curve above (best `0.542`) IS the CoT result. The tasks are multi-step (bit / equation / decryption need scratch space) and CoT generation matches the official `enable_thinking=True` distribution, so v5 keeps CoT on at inference; the vLLM path is the tool for a stable full-val number. (Speculative A/B scaffolding was removed.)
 
 ## 官方评测标准 (Official Metric — 来自 Kaggle,请勿改动)
 
@@ -328,6 +364,26 @@ CoT run step-1000 eval 里有一类"模型其实算对了却判错"的样本,根
 - 预计 ~3–5h(2 卡并行;thinking 模式逐条生成,bit/equation 常跑满 token 预算)。两半跑完后合并两个 jsonl 计总分 + 分 family。**结果待回填。**
 - 重要:此 eval 评的是**当前(转义格式)模型**,因此**包含转义罚分**,是当前真实基线;转义修复的增益要等用新代码重训后才体现。
 
+### 已排队:GPU5/6 释放后自动跑 v5 best checkpoint 全量 official eval (2026-06-05 21:56 CST)
+
+上面的 v4 全量 eval 占着 GPU5/6(PID `1636773`/`1636775`,~21:41 时 s0 在 `309/1049`,约 30%)。已挂一个**非侵入式 watcher**,等这两半结束、GPU5/6 各空出 ≥68000MiB 后,自动用 GPU5/6 给**正式方向 v5 run**(`runs/cot_v5_gpu3_from_base_raw/`,GPU3 训练中 PID `3990225`)的 best checkpoint 跑 2-shard 全量 official eval。
+
+- 脚本:`scripts/watch_gpus56_then_v5_fullval_eval.sh`;watcher PID `2397923`(nohup,独立存活)。
+- watch 日志:`runs/cot_v5_gpu3_from_base_raw/eval/v5_fullval_official.watch.log`。
+- **checkpoint 选取在启动那一刻才定**:扫 `runs/cot_v5_gpu3_from_base_raw/eval/eval_step-*_summary.json`,取 48-val accuracy 最高**且目录仍存在**的 checkpoint(故会自动用上等待期间 v5 新写的 checkpoint;此刻最优仅 step-200 `acc=0.396`,届时应更高),否则回落 `latest_checkpoint.txt`。可用 `ADAPTER_OVERRIDE` 强制指定。
+- eval 配置对齐 v5:`TRAIN_CSV=data/train_plus_synthetic_v5.csv`、`VAL_MAX_SAMPLES=0`(全量 val)、`OFFICIAL_PROMPT_ALIGN=1`、`INFERENCE_FINAL_ANSWER_PREFILL=0`(thinking)、`INFERENCE_STOP_AFTER_BOXED=1`、`EVAL_MAX_NEW_TOKENS=1024`、`MAX_SEQ_LEN=1024`(留 prompt 余量,≥训练 896)。shard0→GPU5,shard1→GPU6。
+- 产物:`eval/eval_v5_step<STEP>_fullval_official_s{0,1}.jsonl` + 自动 `scripts/merge_shard_eval.py` 合成 `eval/eval_v5_step<STEP>_fullval_official_merged_summary.json`(总分 + 分 family/source)。**结果待回填。**
+- 注意:这是 **raw-answer + aligned prompt** 的新基线,与上面 v4(转义格式、旧 prompt)全量基线**不可逐分直接对比**。
+
+## Prompt 对齐官方 (2026-06-05, 待下次重训生效)
+
+修复本地训练/eval 与官方提交 prompt 的分布不一致(上文 line 59 记的未对齐项之一)。
+
+- 新增开关 `OFFICIAL_PROMPT_ALIGN`(`train_sft.py`,默认 **True**)。开启后 `build_chat_messages`/`format_inference_prompt`/`format_example` 产出**与官方逐字一致**的 prompt:**无 system prompt**;user = `prompt` + 官方那句 `\nPlease put your final answer inside \`\boxed{}\`. For example: \`\boxed{your answer}\``;chat template `add_generation_prompt=True, enable_thinking=True`(渲染到 `<|im_start|>assistant\n<think>`)。关闭则回退旧的 `SYSTEM_PROMPT` 路径。
+- 新增 `scripts/check_prompt_align.py`:仅加载 tokenizer(**无需 GPU**),断言本地渲染 == 官方 harness 构造方式,且 `SYSTEM_PROMPT` 不泄漏、官方指令存在。**已通过:byte-identical。**
+- 该函数训练/eval 共用,故**下次重训会从一开始就在官方 prompt 分布上训练**;本地 eval 也随之可预测线上分。
+- 注意:正在跑的全量基线用的是**旧 prompt**(有 system、无指令),与未来 aligned run **prompt 不可直接比**,需在 aligned 重训后重新建基线。`OFFICIAL_PROMPT_ALIGN` 改动**不影响在跑的进程**(旧代码已在内存)。
+
 ## Active Issue
 
 The format issue has mostly been fixed: response-only loss, final-answer prefill, and stop-after-boxed generation moved boxed rate to `100/100` on both the old adapter fixed-format eval and the current step-100 eval. The active issue is now data quality and task solvability. `synthetic_v1` contains a systematic `equation_symbol_transformation` bug where many final-query symbols are never shown in the example inputs, making the mapping impossible to infer. `synthetic_v2` fixes this and also aligns displayed numeric inputs with computed numeric answers.
@@ -510,6 +566,11 @@ Validation results:
 | 2026-06-03 16:25:45 CST | Started the requested v3 training on GPU 6: `runs/synthetic_v3_gpu6_v2best_ckpt50/`, PID `2486933`, W&B `upzx02so`, warm-starting from v2 no-brace `adapter_best`, with checkpoint every 50 steps and eval every 100 steps. The run entered training and reached optimizer step 7 without OOM. Started watcher PID `2707788` to wait for GPU 5 full-val eval PID `1154476`, then stop the single-GPU run after a complete checkpoint and launch 5/6 DDP at `runs/synthetic_v3_ddp56_from_gpu6_latest/`. |
 | 2026-06-05 16:58:00 CST | Fixed boxed/official-metric misalignment in `train_sft.py`: training now writes RAW answers into `\boxed{...}` (no `\\`/`\{`/`\}` escaping), and local extract/truncate/stop are aligned to the official greedy extractor with a `}.` terminator (no answer contains `}.`, so unbalanced-brace answers like `+}`/`{17` survive). Measured: raw target → official extractor 0/21000 mismatches vs 527 for the old depth scan; 548 answers contain braces, 287 contain backslash. Rewrote `test_boxed_answer.py` (5 tests pass) + `py_compile`. Existing CoT checkpoints were trained with the old escaped format, so the fix only benefits future re-training. |
 | 2026-06-05 16:58:30 CST | Launched full-val official eval of best CoT checkpoint `checkpoints/checkpoint-001000` (step-1000, 48-val best 0.5208). Full v4 val = 2097 rows, thinking mode (`INFERENCE_FINAL_ANSWER_PREFILL=0`, `EVAL_MAX_NEW_TOKENS=1024`), official metric. Baselines the CURRENT (escaped) model so it includes the escaping penalty. |
+| 2026-06-05 18:10:00 CST | Implemented official prompt alignment in `train_sft.py` behind `OFFICIAL_PROMPT_ALIGN` (default on): no system prompt, user content += official `\boxed{}` instruction, `enable_thinking=True`. Added no-GPU smoke `scripts/check_prompt_align.py` asserting byte-identity with the Kaggle harness — passes. Pure-code change; takes effect on the NEXT (re)training run, does not affect the running eval/training. The current full-val baseline uses the OLD prompt so it is not prompt-comparable to a future aligned run. |
 | 2026-06-05 17:20:00 CST | Per request, switched the full-val eval to 2-GPU data parallel on GPU5+6. Added `NUM_SHARDS`/`SHARD_INDEX` (gather_every split) to `eval_adapter.py`. Stopped (SIGTERM) the other CoT training on GPU5 `cot_v4_gpu5_resume_trunc896` (PID 1383983, step 479, resumable from `checkpoint-000450`) to free the card. Eval now: shard0 GPU5 PID `1636773` (1049 rows), shard1 GPU6 PID `1636775` (1048 rows); merge both jsonl when done. ETA ~3-5h. The old escaped-format GPU3 training `cot_v4_gpu3_resume_trunc896` was later stopped; do not continue it. |
 | 2026-06-05 18:58:00 CST | Launched formal raw-answer CoT v5 training from base on GPU3. Run root `runs/cot_v5_gpu3_from_base_raw/`, PID `3990225`, W&B `yzlj23lm`, train CSV `data/train_plus_synthetic_v5.csv`. Verified it loaded the model, attached LoRA, entered training, and reached optimizer step 2 with finite loss. First checkpoint is step 50; first eval is step 200. |
 | 2026-06-03 17:35:24 CST | GPU 5 full-val v2 best eval completed: `747/1530 = 0.4882` accuracy, `1528/1530 = 0.9987` boxed. Watcher stopped the GPU 6 single run after `checkpoint-000050` and launched v3 DDP on GPUs 5/6 under `runs/synthetic_v3_ddp56_from_gpu6_latest/`. Patched `train_sft.py` to restore CUDA RNG states as CPU ByteTensors and tolerate optimizer/scheduler restore mismatch; relaunched DDP outside the sandbox. The active DDP run resumed at `global_step=50` and was observed training at `step=59`. |
+| 2026-06-06 08:42 CST | v5 training (`runs/cot_v5_gpu3_from_base_raw/`, PID `3990225`) still live at ~step 1000 (42% of epoch 0); 48-val eval reached a new best `0.542` at step-1000 (curve `0.396 / 0.479 / 0.500 / 0.458 / 0.542` for steps 200–1000), boxed `0.83–0.98`. |
+| 2026-06-06 08:42 CST | Added `EVAL_BASE_ONLY` official-rows-only val split: `train_sft.split_train_val` (val = 947 official rows, all synthetic → train), `eval_adapter.py` switched to it (prints `EVAL_BASE_ONLY`/`BASE_SOURCE`), new `scripts/eval_v5_latest_baseonly.sh` (2-shard GPU5/6). |
+| 2026-06-06 08:42 CST | Fast vLLM eval pipeline added & verified (separate effort): isolated `.venv-vllm` (vllm 0.22.1), `scripts/vllm_eval_full.sh` 3-stage (build → gen → score), full 947 official val ~12 min vs hours. H100 fix `CUDA_HOME=/usr/local/cuda-13.1 TORCH_CUDA_ARCH_LIST=9.0a`. vLLM applies the Mamba+MoE LoRA faithfully (100% boxed-sample agreement vs HF/PEFT on 32 rows). Honors `INFERENCE_FINAL_ANSWER_PREFILL`. |
+| 2026-06-06 08:42 CST | Decided against a dedicated CoT-vs-answer-only inference A/B: v5 already trains `prefill=1` / evals `prefill=0`, so CoT-at-inference is the configured mode and its rising eval curve is the CoT result. Removed the speculative A/B scaffolding (`scripts/ab_cot_*`). |

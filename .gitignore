@@ -5,6 +5,7 @@ __pycache__/
 
 # Local environments and secrets
 .venv/
+.venv-vllm/
 .env
 .env.*
 .python-version
