@@ -68,6 +68,14 @@ def load_pairs(prompts_files, completions_files):
     return out
 
 
+def env_float_any(names, default):
+    for name in names:
+        v = os.environ.get(name)
+        if v not in (None, ""):
+            return float(v)
+    return default
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--prompts", required=True, help="comma-separated stage-1 jsonl(s)")
@@ -82,6 +90,23 @@ def main():
     assert len(pf) == len(cf), "prompts/completions shard counts differ"
     pairs = load_pairs(pf, cf)
 
+    # OFFICIAL_SCORING mirrors docs/nvidia-nemotron-metric.ipynb: no stop-after-boxed,
+    # extract_final_answer on the RAW generation (takes the LAST boxed span). Default
+    # on matches the competition metric; set OFFICIAL_SCORING=0 for HF eval parity.
+    official_scoring = train_sft.env_bool("OFFICIAL_SCORING", True)
+    eval_params = {
+        "max_lora_rank": train_sft.env_int("MAX_LORA_RANK", 16),
+        "max_tokens": train_sft.env_int(
+            "MAX_TOKENS",
+            train_sft.env_int("EVAL_MAX_NEW_TOKENS", 7680),
+        ),
+        "top_p": env_float_any(("TOP_P",), 1.0),
+        "temperature": env_float_any(("TEMPERATURE",), 0.0),
+        "max_num_seqs": train_sft.env_int("MAX_NUM_SEQS", 64),
+        "gpu_memory_utilization": env_float_any(("GPU_MEMORY_UTILIZATION", "GPU_MEM_UTIL"), 0.85),
+        "max_model_len": train_sft.env_int("MAX_MODEL_LEN", 8192),
+    }
+
     correct = total = boxed_count = 0
     fam_c = defaultdict(int); fam_t = defaultdict(int); fam_b = defaultdict(int)
     src_c = defaultdict(int); src_t = defaultdict(int); src_b = defaultdict(int)
@@ -91,9 +116,12 @@ def main():
     for _, p, c in pairs:
         answer_prefix = p.get("answer_prefix", "")
         full = answer_prefix + c["decoded_raw"]
-        stopped = emulate_hf_stop(full)
-        decoded = train_sft.truncate_after_first_boxed(stopped) \
-            if train_sft.INFERENCE_STOP_AFTER_BOXED else stopped
+        if official_scoring:
+            decoded = full  # official: full generation; extract_final_answer takes LAST boxed
+        else:
+            stopped = emulate_hf_stop(full)
+            decoded = train_sft.truncate_after_first_boxed(stopped) \
+                if train_sft.INFERENCE_STOP_AFTER_BOXED else stopped
         boxed_pred = train_sft.extract_boxed(decoded)
         pred = official_extract_final_answer(decoded)
         gold = p["gold"]
@@ -121,6 +149,8 @@ def main():
     acc = correct / total if total else 0.0
     summary = {
         "label": args.label,
+        "scoring": "official" if official_scoring else "train_sft_parity",
+        "eval_params": eval_params,
         "accuracy": acc,
         "num_total": total,
         "num_correct": correct,

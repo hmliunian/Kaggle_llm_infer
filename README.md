@@ -145,6 +145,21 @@ By default eval now pre-fills `</think>\nThe final answer is \boxed{` and stops 
 INFERENCE_FINAL_ANSWER_PREFILL=0 INFERENCE_STOP_AFTER_BOXED=0 ...
 ```
 
+For official-style final validation, use the vLLM path. It mirrors
+`docs/nvidia-nemotron-metric.ipynb` generation defaults and writes the params into
+the summary JSON:
+
+```bash
+VAL_PER_SHARD=0 GPU0=5 GPU1=6 bash scripts/vllm_eval_full.sh
+```
+
+Final eval defaults are `MAX_TOKENS=7680`, `TOP_P=1.0`, `TEMPERATURE=0.0`,
+`MAX_NUM_SEQS=64`, `GPU_MEMORY_UTILIZATION=0.85`, and `MAX_MODEL_LEN=8192`.
+`MAX_LORA_RANK` is inferred from `adapter_config.json` and is `16` for the
+current adapter; set it explicitly when evaluating a different rank. `EVAL_MAX_NEW_TOKENS`
+and `GPU_MEM_UTIL` are still accepted as compatibility aliases for `MAX_TOKENS`
+and `GPU_MEMORY_UTILIZATION`.
+
 ## Outputs
 
 Final adapter:
