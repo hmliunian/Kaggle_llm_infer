@@ -1,6 +1,6 @@
 # Nemotron SFT Project Progress
 
-Last updated: 2026-06-06 08:42 CST
+Last updated: 2026-06-06 15:30 CST
 
 | Stage | Status | Evidence | Next action |
 | --- | --- | --- | --- |
@@ -11,7 +11,14 @@ Last updated: 2026-06-06 08:42 CST
 | M5 Full SFT baseline | Archived | Earlier smoke/mini/baseline/rank test artifacts were removed on 2026-06-02 to avoid mixing old-code results with the current response-only/DDP runs. | No action unless a fresh non-synthetic baseline is needed. |
 | M6 Synthetic data | Running | `synthetic_v1` produced 6,000 rows but later validation found solvability bugs. `synthetic_v2` fixed visibility/numeric consistency and produced the clean no-brace v2 DDP baseline through step-2600 eval (`48/100`, best observed step-1900 `51/100`, `100/100` boxed). `synthetic_v3` adds weak-family upweighting and brace-safe answer support; the active v3 run is now 5/6 DDP at `runs/synthetic_v3_ddp56_from_gpu6_latest/`, resumed from GPU 6 `checkpoint-000050`. | Let the v3 DDP run reach step-100 eval/checkpoint, then compare against the v2 no-brace baseline and full-val v2 best result. |
 | M7 RLVR/GRPO | Not started | No RL pipeline found. | Defer. |
-| M8 Solver-guided CoT v5 | Running | `runs/cot_v5_gpu3_from_base_raw/` training live (PID `3990225`, ~step 1000 / 42% of epoch 0); 48-val eval rising steps 200→1000 `0.396 / 0.479 / 0.500 / 0.458 / 0.542` (best **0.542** @ step-1000), boxed `0.83–0.98`. `EVAL_BASE_ONLY` official-only val (947) split + verified fast vLLM eval pipeline added. | Let training continue; use the vLLM path for stable full-official-val evals; select best checkpoint by full-val acc. |
+| M8 Solver-guided CoT v5 | Running | `runs/cot_v5_gpu3_from_base_raw/` training live (PID `3990225`, ~step 1430 / 61% of epoch 0); latest checkpoint pointer is `checkpoint-001400`. 48-val eval steps 200→1400: `0.396 / 0.479 / 0.500 / 0.458 / 0.542 / 0.521 / 0.542` (best **0.542** @ step-1000 and step-1400). Full official-only vLLM eval of step-1000 with official 7680-token budget: **606/947 = 0.640**, boxed `0.937`. | Let training continue; rerun full official vLLM on later strong checkpoints, and prioritize bit/equation gains before any RLVR/GRPO. |
+| M9 Reasoner-aligned v6 dataset | Data ready | `data/train_plus_synthetic_v6.csv` (22,300 rows) built by `scripts/build_v6_synthetic.py`. Replaced the narrow v3 bit/equation synthetic (all XOR-mask) with reasoner-driven rows: bit 3,500 (two-input-op **79%**, matches official ~78%; all 9 families incl. `*-NOT`), numeric equation 2,500 (full `equation_numeric.py` op space), symbolic 1,300 (900 constructed-solvable arithmetic cryptarithm + 400 concat). Every synthetic CoT is `verify`-gated, byte-compatible with imported official CoT. CoT coverage up: equation 3,541→**4,466**, bit 4,364→**4,864**. Plan + de-risk + results: **[`data/V6_DATASET_PLAN.md`](data/V6_DATASET_PLAN.md)**. | Retrain from base on v6, compare bit/equation subsets vs the v5 cot run on fixed val; no regression on gravity/numeral/unit/text. |
+
+## v6 reasoner-aligned dataset (2026-06-06 15:30 CST)
+
+完整方案、缺陷分析、reasoner 对齐与可行性 de-risk、生成结果,见 **[`data/V6_DATASET_PLAN.md`](data/V6_DATASET_PLAN.md)**。
+
+一句话:v5 诊断出 bit/equation 的根因是**规则空间错配**而非训练步数不足——旧合成 bit 100% 是 XOR-mask(代数上只落在 `{I,NOT}` 子空间),而官方 78% 的 bit 题要用双输入位布尔(AND/OR/XOR/`*-NOT`);数值 equation 只覆盖 6 种 mod10 运算,缺 `equation_numeric.py` 大半 op。v6 改用"采样规则 → 喂 `extern/nemotron/reasoners` → `verify(gold,pred)` 通过才入库 → 复用 `compact_reasoning` 压缩"的方式,使合成 CoT 与官方导入**逐字同格式同分布**。符号 cryptarithm 因本质欠定(≤4 样例/~10 未知)无法大量诚实求解,故官方行仅 gold 验证补 30 条,改以**构造唯一可解**的合成符号题(900 条)补足该子空间。产物:`data/train_plus_synthetic_v6.csv`(22,300 行)、`data/synthetic_v6.csv`(7,300 新合成)、`scripts/build_v6_synthetic.py`。
 
 ## Planned bit/equation repair: solver-guided CoT v5 (2026-06-05 17:36 CST)
 
@@ -130,19 +137,42 @@ Formal run:
 
 Observed after launch: model loaded, LoRA attached (`440,069,120` trainable params), dataset prepared (`21000` rows, `19748` with CoT), and training entered epoch 0. Next action is to monitor first checkpoint at step 50 and first eval at step 200. Do **not** resume from old escaped-format CoT checkpoints.
 
-## v5 progress: training, official-only val split, verified vLLM eval (2026-06-06 08:42 CST)
+## v5 progress: training, official-only val split, verified vLLM eval (2026-06-06 14:01 CST)
 
-State of the formal raw-answer CoT v5 run (`runs/cot_v5_gpu3_from_base_raw/`, PID `3990225`, ~13.8h in):
+State of the formal raw-answer CoT v5 run (`runs/cot_v5_gpu3_from_base_raw/`, PID `3990225`, ~19.1h in):
 
-- Training is **still live**, at ~optimizer step `1000` (batch `8010/18903`, 42% of epoch 0 of 3); loss ~`0.01–0.04`, lr `9.68e-5`, `MAX_TRAIN_STEPS=10000`. Checkpoints every 50 steps under `checkpoints/`.
+- Training is **still live**, at ~optimizer step `1430` (batch ~`11440/18903`, 61% of epoch 0 of 3); recent loss usually ~`0.01–0.14` with occasional spikes, lr ~`9.25e-5`, `MAX_TRAIN_STEPS=10000`. Checkpoints every 50 steps under `checkpoints/`; latest pointer is `checkpoint-001400`.
 - 48-sample eval (thinking mode, `INFERENCE_FINAL_ANSWER_PREFILL=0`) rises with training:
 
-  | step | 200 | 400 | 600 | 800 | 1000 |
-  | --- | --- | --- | --- | --- | --- |
-  | accuracy | 0.396 | 0.479 | 0.500 | 0.458 | **0.542** |
-  | boxed_rate | 0.875 | 0.833 | 0.979 | 0.833 | 0.917 |
+  | step | 200 | 400 | 600 | 800 | 1000 | 1200 | 1400 |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | accuracy | 0.396 | 0.479 | 0.500 | 0.458 | **0.542** | 0.521 | **0.542** |
+  | boxed_rate | 0.875 | 0.833 | 0.979 | 0.833 | 0.917 | 0.958 | 0.875 |
 
-  New best is step-1000 `0.542`. The 48-row val is noisy — use the full official val via the vLLM path below for a stable read.
+  Best 48-row result is tied at step-1000 and step-1400 (`26/48 = 0.542`). The 48-row val is noisy; use the full official val via the vLLM path below for a stable read.
+
+- Latest family signal on the 48-row monitor (step-1400): `bit_manipulation` `3/13`, `equation_symbol_transformation` `3/12`, `gravity_formula` `10/10`, `numeral_system` `2/2`, `text_decryption` `2/5`, `unit_conversion` `6/6`. Official-train rows inside this tiny 48 split remain weak on bit/equation/text (`0/4`, `0/5`, `0/3`), so full official-val is the main checkpoint selector.
+
+### Full official vLLM result for step-1000
+
+Completed the full **947-row official-only** vLLM eval for `checkpoint-001000` using the leaderboard-like 7680-token generation budget and official scoring:
+
+| checkpoint | tokens | correct / total | accuracy | boxed_rate | hit token cap |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `checkpoint-001000` | 7680 | `606/947` | **0.640** | 0.937 | 0.067 |
+
+Family breakdown:
+
+| family | acc | n | boxed |
+| --- | ---: | ---: | ---: |
+| `bit_manipulation` | 0.125 | 160 | 0.944 |
+| `equation_symbol_transformation` | 0.174 | 155 | 0.858 |
+| `gravity_formula` | 0.981 | 159 | 1.000 |
+| `numeral_system` | 1.000 | 157 | 1.000 |
+| `text_decryption` | 0.554 | 157 | 0.815 |
+| `unit_conversion` | 1.000 | 159 | 1.000 |
+
+This is now the strongest stable v5 readout. Shorter vLLM budgets under-report because CoT often hits the token cap: step-1000 with 1024 tokens scored `490/947 = 0.517` and boxed `0.796`; the earlier non-official/default full run scored `358/947 = 0.378` and is superseded by the official 7680-token run.
 
 ### EVAL_BASE_ONLY: official-rows-only validation split
 

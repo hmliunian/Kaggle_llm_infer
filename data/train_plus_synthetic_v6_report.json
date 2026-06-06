@@ -1,0 +1,31 @@
+{
+  "total_rows": 22300,
+  "official_symbolic_cot_filled": 30,
+  "synth_added": 7300,
+  "by_family": {
+    "bit_manipulation": {
+      "total": 5102,
+      "has_cot": 4864
+    },
+    "text_decryption": {
+      "total": 3076,
+      "has_cot": 3076
+    },
+    "numeral_system": {
+      "total": 2076,
+      "has_cot": 2076
+    },
+    "unit_conversion": {
+      "total": 2094,
+      "has_cot": 2094
+    },
+    "gravity_formula": {
+      "total": 4597,
+      "has_cot": 4597
+    },
+    "equation_symbol_transformation": {
+      "total": 5355,
+      "has_cot": 4466
+    }
+  }
+}

@@ -468,6 +468,42 @@ def split_train_val(full_df, val_ratio=VAL_RATIO, seed=SEED):
     return stratified_split(full_df, val_ratio=val_ratio, seed=seed)
 
 
+def source_counts(df):
+    if "source" not in df.columns:
+        return {}
+    return Counter(str(r.get("source") or "") for r in df.select("source").to_dicts())
+
+
+def validate_eval_split(full_df, train_df, val_df):
+    if "source" not in full_df.columns:
+        return
+
+    train_sources = source_counts(train_df)
+    val_sources = source_counts(val_df)
+    log_main("  Train source distribution:")
+    for source, count in sorted(train_sources.items()):
+        log_main(f"    {source}: {count}")
+    log_main("  Val source distribution:")
+    for source, count in sorted(val_sources.items()):
+        log_main(f"    {source}: {count}")
+
+    has_non_base_rows = full_df.filter(pl.col("source") != BASE_SOURCE).height > 0
+    if not (EVAL_BASE_ONLY and has_non_base_rows):
+        return
+
+    non_base_val = {source: count for source, count in val_sources.items() if source != BASE_SOURCE}
+    if non_base_val:
+        raise RuntimeError(
+            "EVAL_BASE_ONLY=1 but validation split contains non-base rows: "
+            f"{non_base_val}. Expected validation source to be only {BASE_SOURCE!r}."
+        )
+    if val_sources.get(BASE_SOURCE, 0) != len(val_df):
+        raise RuntimeError(
+            "EVAL_BASE_ONLY=1 but validation split is not entirely base-source rows: "
+            f"{dict(val_sources)}"
+        )
+
+
 # ─── Dataset ─────────────────────────────────────────────────────────────────
 class SFTDataset(Dataset):
     def __init__(self, df, tokenizer, max_length=2048):
@@ -1266,6 +1302,7 @@ def main():
         train_df = train_df.head(TRAIN_ROW_LIMIT)
         log_main(f"  Smoke train row limit applied: {len(train_df)}")
     log_main(f"  Train: {len(train_df)}, Val: {len(val_df)}")
+    validate_eval_split(full_df, train_df, val_df)
 
     # Val family distribution
     val_families = [classify_prompt(r["prompt"]) for r in val_df.to_dicts()]
