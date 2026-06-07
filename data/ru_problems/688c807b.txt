@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+76&34 = &42
+49<39 = 88
+50&40 = &10
+64&35 = &29
+Now, determine the result for: 28\64

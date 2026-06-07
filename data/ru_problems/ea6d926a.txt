@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+15-77 = 62
+78*32 = 2002
+41-05 = 8
+95*11 = 056
+Now, determine the result for: 25+62

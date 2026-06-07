@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+97>98 = 194
+53&45 = 8
+35)79 = 2764
+12)34 = 407
+Now, determine the result for: 38&90

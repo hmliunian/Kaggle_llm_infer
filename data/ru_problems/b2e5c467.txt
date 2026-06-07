@@ -1,0 +1,5 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+35@81 = 17
+95@97 = 831
+25@32 = 57
+Now, determine the result for: 61^07

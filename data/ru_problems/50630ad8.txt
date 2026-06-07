@@ -1,0 +1,7 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+49`94 = 9449
+67`98 = 9867
+03$01 = 02
+37+35 = 621
+59`76 = 7659
+Now, determine the result for: 51$37

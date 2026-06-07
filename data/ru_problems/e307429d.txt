@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+42\92 = 5\
+34/94 = 29
+82\67 = 84\
+71/14 = 85
+Now, determine the result for: 47[44

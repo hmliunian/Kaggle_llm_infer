@@ -1,0 +1,7 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+35*26 = 6823
+46*41 = 698
+61-26 = -64
+52*43 = 058
+07-66 = -4
+Now, determine the result for: 29+11

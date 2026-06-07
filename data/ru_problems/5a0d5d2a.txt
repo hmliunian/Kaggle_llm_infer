@@ -1,0 +1,5 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+27-65 = 61
+47*42 = 7771
+81-09 = -27
+Now, determine the result for: 39+94

@@ -1,0 +1,7 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+34|42 = 75
+65[10 = 650
+78[97 = 7566
+95%35 = 25
+65[18 = 1170
+Now, determine the result for: 75%24

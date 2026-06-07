@@ -1,0 +1,7 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+62[83 = 5146
+99[39 = 3861
+14[53 = 742
+33[43 = 1419
+80!25 = 5
+Now, determine the result for: 48*64

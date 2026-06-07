@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+99-66 = 6533
+13:92 = 1
+49|31 = 80
+76|65 = 141
+Now, determine the result for: 90:15

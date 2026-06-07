@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+41<21 = 2
+53&51 = 525
+23&09 = 0882
+25<51 = 7
+Now, determine the result for: 38\29

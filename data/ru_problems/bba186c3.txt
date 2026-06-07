@@ -1,0 +1,5 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+14-04 = 18
+99-07 = 961
+66*95 = 7
+Now, determine the result for: 71)42

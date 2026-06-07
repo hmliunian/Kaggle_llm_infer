@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+54`14 = 755
+54%61 = %7
+61%37 = 24
+93`99 = 9206
+Now, determine the result for: 84?52

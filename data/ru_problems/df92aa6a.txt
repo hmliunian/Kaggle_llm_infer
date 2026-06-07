@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+02+12 = 24
+23-25 = -02
+82+17 = 001
+94-63 = 31
+Now, determine the result for: 82*76

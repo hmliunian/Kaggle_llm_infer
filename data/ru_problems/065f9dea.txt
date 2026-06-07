@@ -1,0 +1,5 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+19}15 = 1464
+74!78 = 7874
+64!23 = 2364
+Now, determine the result for: 43*96

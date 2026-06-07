@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+78]18 = 6
+95]24 = 23
+52*94 = 145
+21]91 = 7
+Now, determine the result for: 31%96

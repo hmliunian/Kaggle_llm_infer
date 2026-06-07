@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+53^32 = 608
+02%69 = 611
+64%86 = 411
+81%56 = 38
+Now, determine the result for: 06@52

@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+10$38 = 8
+46@33 = 1518
+95[44 = 138
+37@53 = 1961
+Now, determine the result for: 80$13

@@ -1,0 +1,53 @@
+{
+  "input": "data/train_plus_synthetic_v6.csv",
+  "output": "data/train_plus_synthetic_v7.csv",
+  "extern_root": "extern/nemotron",
+  "target_families": [
+    "bit_manipulation",
+    "equation_symbol_transformation"
+  ],
+  "target_status": "hypothesis_formed",
+  "total_rows": 22300,
+  "total_has_cot": 21248,
+  "total_cot_rate": 0.9528251121076233,
+  "stats": {
+    "hypothesis_formed_seen": 213,
+    "investigation_imported": 75,
+    "imported_bit_manipulation": 11,
+    "skipped_wrong_answer": 26,
+    "skipped_terse_searcher": 112,
+    "imported_equation_symbol_transformation": 64
+  },
+  "by_family": {
+    "bit_manipulation": {
+      "total": 5102,
+      "has_cot_before": 4864,
+      "has_cot_after": 4875
+    },
+    "equation_symbol_transformation": {
+      "total": 5355,
+      "has_cot_before": 4466,
+      "has_cot_after": 4530
+    },
+    "gravity_formula": {
+      "total": 4597,
+      "has_cot_before": 4597,
+      "has_cot_after": 4597
+    },
+    "numeral_system": {
+      "total": 2076,
+      "has_cot_before": 2076,
+      "has_cot_after": 2076
+    },
+    "text_decryption": {
+      "total": 3076,
+      "has_cot_before": 3076,
+      "has_cot_after": 3076
+    },
+    "unit_conversion": {
+      "total": 2094,
+      "has_cot_before": 2094,
+      "has_cot_after": 2094
+    }
+  }
+}

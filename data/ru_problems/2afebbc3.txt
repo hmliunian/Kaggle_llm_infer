@@ -1,0 +1,6 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+85#34 = 8534
+20/37 = 17
+57#26 = 5726
+67#85 = 6785
+Now, determine the result for: 18/52

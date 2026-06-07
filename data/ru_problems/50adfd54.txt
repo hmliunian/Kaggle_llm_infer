@@ -1,0 +1,5 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+12*23 = 176
+52-61 = 9
+88*89 = 3268
+Now, determine the result for: 42-18

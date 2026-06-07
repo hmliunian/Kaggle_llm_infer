@@ -1,6 +1,6 @@
 # Nemotron SFT Project Progress
 
-Last updated: 2026-06-06 15:30 CST
+Last updated: 2026-06-07 09:31 CST
 
 | Stage | Status | Evidence | Next action |
 | --- | --- | --- | --- |
@@ -13,12 +13,91 @@ Last updated: 2026-06-06 15:30 CST
 | M7 RLVR/GRPO | Not started | No RL pipeline found. | Defer. |
 | M8 Solver-guided CoT v5 | Running | `runs/cot_v5_gpu3_from_base_raw/` training live (PID `3990225`, ~step 1430 / 61% of epoch 0); latest checkpoint pointer is `checkpoint-001400`. 48-val eval steps 200→1400: `0.396 / 0.479 / 0.500 / 0.458 / 0.542 / 0.521 / 0.542` (best **0.542** @ step-1000 and step-1400). Full official-only vLLM eval of step-1000 with official 7680-token budget: **606/947 = 0.640**, boxed `0.937`. | Let training continue; rerun full official vLLM on later strong checkpoints, and prioritize bit/equation gains before any RLVR/GRPO. |
 | M9 Reasoner-aligned v6 dataset | Data ready | `data/train_plus_synthetic_v6.csv` (22,300 rows) built by `scripts/build_v6_synthetic.py`. Replaced the narrow v3 bit/equation synthetic (all XOR-mask) with reasoner-driven rows: bit 3,500 (two-input-op **79%**, matches official ~78%; all 9 families incl. `*-NOT`), numeric equation 2,500 (full `equation_numeric.py` op space), symbolic 1,300 (900 constructed-solvable arithmetic cryptarithm + 400 concat). Every synthetic CoT is `verify`-gated, byte-compatible with imported official CoT. CoT coverage up: equation 3,541→**4,466**, bit 4,364→**4,864**. Plan + de-risk + results: **[`data/V6_DATASET_PLAN.md`](data/V6_DATASET_PLAN.md)**. | Retrain from base on v6, compare bit/equation subsets vs the v5 cot run on fixed val; no regression on gravity/numeral/unit/text. |
+| M10 v7 investigation-prose CoT import | Data ready | `data/train_plus_synthetic_v7.csv` (22,300 rows, same format as v6) built by `scripts/build_v7_investigations.py`: harvests the genuine LLM-prose `hypothesis_formed` investigations from `extern/nemotron/investigations/*.txt` that v5's solver-only import had skipped (solver boxed≠gold), keeping a row only when its predicted answer passes `official_metric.verify` and the file is real prose (not terse searcher output). Imported **75** (bit +11, equation +64) of 213 seen; skipped 26 wrong-answer + 112 terse. CoT coverage `21,173→21,248` (**94.95%→95.28%**); remaining 1,052 answer-only are genuinely-underdetermined `rule_unknown` cryptarithm. Report: `data/train_plus_synthetic_v7_report.json`. | Retrain from base (or warm-start) on v7; compare bit/equation vs the v5/v6 cot runs on the fixed official val. Expect a small honest gain. |
 
 ## v6 reasoner-aligned dataset (2026-06-06 15:30 CST)
 
 完整方案、缺陷分析、reasoner 对齐与可行性 de-risk、生成结果,见 **[`data/V6_DATASET_PLAN.md`](data/V6_DATASET_PLAN.md)**。
 
 一句话:v5 诊断出 bit/equation 的根因是**规则空间错配**而非训练步数不足——旧合成 bit 100% 是 XOR-mask(代数上只落在 `{I,NOT}` 子空间),而官方 78% 的 bit 题要用双输入位布尔(AND/OR/XOR/`*-NOT`);数值 equation 只覆盖 6 种 mod10 运算,缺 `equation_numeric.py` 大半 op。v6 改用"采样规则 → 喂 `extern/nemotron/reasoners` → `verify(gold,pred)` 通过才入库 → 复用 `compact_reasoning` 压缩"的方式,使合成 CoT 与官方导入**逐字同格式同分布**。符号 cryptarithm 因本质欠定(≤4 样例/~10 未知)无法大量诚实求解,故官方行仅 gold 验证补 30 条,改以**构造唯一可解**的合成符号题(900 条)补足该子空间。产物:`data/train_plus_synthetic_v6.csv`(22,300 行)、`data/synthetic_v6.csv`(7,300 新合成)、`scripts/build_v6_synthetic.py`。
+
+## rule_unknown CoT 生成实验:LLM 投票补全 918 缺口 (2026-06-06 23:20 CST)
+
+### 背景与缺口定位
+
+v6 仍有 **1,127 行 official_train 无 CoT(answer-only)**,全部集中在两族,且来源就是 `extern/nemotron/problems.jsonl` 的 `status` 字段:
+
+| family | hypothesis_formed | **rule_unknown** | 合计 |
+| --- | ---: | ---: | ---: |
+| bit_manipulation | 121 | **117** | 238 |
+| equation_symbol_transformation | 128 | **801** | 889 |
+
+v5 import 只从**确定性 solver** 轨迹 `reasoning/*.txt` 取 CoT(boxed==gold 才留)。对 `rule_unknown` 行,本地 solver 与参考 120B 模型**都没解出**(分析见下),故只能 answer-only。本实验专攻这 **918 个 rule_unknown** 缺口:用更强模型(Claude Opus 4.8)按 Nemotron investigation 风格生成 CoT,并**只保留 `verify(pred,gold)` 通过的**(承接既有 import 安全规则——自信的错 CoT 比没有更糟)。
+
+澄清一处既有误解:`investigations/*.txt` **大多不是 LLM 产物**——~1,428/1,667 是 `investigators/*.py` 的确定性暴搜输出(`rule: … / predicted answer:`,无推理链);仅 ~144 是 LLM 散文(`inferred rule / why this fits / step-by-step / confidence note`),其中 100 个是 hypothesis_formed(13 bit + 87 eq)。所以"投更强模型"的真正价值在 **rule_unknown**(solver 与 120B 都失手的 918 行),而非 hypothesis_formed。
+
+### 产物(scripts)
+
+- `scripts/gather_rule_unknown.py` → `data/rule_unknown_problems.jsonl`(918 行:id/family/category/prompt/gold)。分布:`cryptarithm_deduce 559 · cryptarithm_guess 128 · bit_manipulation 117 · equation_numeric_guess 80 · equation_numeric_deduce 34`。
+- `scripts/split_ru_problems.py` → 每题一份 `data/ru_problems/<id>.txt` + 干净索引 `data/ru_index.json`(避免把含 `\ " { }` 的 prompt 塞进工作流参数引发转义问题;agent 读文件即可)。
+- `scripts/extract_ru_results.py`:从工作流 transcript 提取每题 `StructuredOutput`(can_solve/predicted_answer/reasoning),用 `official_metric.verify` 对 gold 打分。
+- 生成工作流(每题一个 Opus agent,结构化输出 investigation 风格 CoT;per-family rule-space 提示;**agent 不可见 gold**;强制"先验证规则复现全部样例,欠定则 can_solve=false")。
+
+### Smoke 结果(均衡 12 题)
+
+| category | 正确/抽样 | 备注 |
+| --- | ---: | --- |
+| equation_numeric_deduce | **2/2** | 最易解(`@`=×,`` ` ``=\|a−b\| 等);CoT 干净逐步 |
+| bit_manipulation | 1/3 | 一题仅差 1 bit |
+| cryptarithm_guess | 1/2 | 一题欠定但猜中 |
+| cryptarithm_deduce | 0/2 | agent 暴搜 10P9 映射,**证明 4 样例在 add/absdiff/mul/concat 假设下互相矛盾** → 诚实 can_solve=false |
+| equation_numeric_guess | 0/2 | query 运算符从未在样例出现,真欠定;agent 正确判 can_solve=false |
+| **合计** | **4/11** | 第 12 题(cryptarithm)agent 手工暴搜 >40min 卡住(详见教训) |
+
+关键证据:`44`54` 那题 agent 正确识别 `` ` `` 在样例里只出现一次、`a−b` 与 `|a−b|` 在 query 上分叉 → can_solve=false 但仍给出正确 best-guess `10`;cryptarithm 失败是**真欠定/超出假设空间**(gold 用了样例未揭示的运算),不是 prompt bug。**这与既有"官方 bit/equation 多为非线性组合且 ≤8 样例不足以唯一确定"的逆向结论一致。**
+
+### 极粗产量外推(smoke 率 × 全量)
+
+`eq_numeric_deduce ~34(≈100%) · cryptarithm_guess ~64(50%,样本极小高方差) · bit ~39(33%) · eq_numeric_guess≈0 · cryptarithm_deduce≈0` → **乐观上限 ~130/918**,且高方差;真实可验证产出预计更低,主力是 `equation_numeric_deduce` 那 34 行(本就高度可解)。结论:**rule_unknown 大头(687 cryptarithm)本质欠定,诚实可解者寥寥**;这正是当初被标 rule_unknown 的原因。
+
+### 教训 / 下一步(待续)
+
+1. **必须限制单 agent 算力**:cryptarithm agent 会手写 Python 暴搜全排列、动辄 30–45min,在 barrier 模式下拖垮整批。下一步全量用 **pipeline + 显式"最多跑一次暴搜、超时即 can_solve=false"** 指令,避免一题阻塞。
+2. 全量 918 跑法:`parallel/pipeline` 分批,产物落 `data/ru_gen/`,再 `extract_ru_results.py` 过 `verify` 汇总,把通过的 CoT(剥去 boxed、保留 investigation 风格)按 v5/v6 同格式回填成 v7。
+3. 因诚实产量低,**v7 增益预计很小(几十行,集中在 eq_numeric)**;cryptarithm rule_unknown 建议维持 answer-only,不要为凑数注入会判错的 CoT。
+
+## v7 数据集:回收 hypothesis_formed investigation 散文 CoT (2026-06-07 09:31 CST)
+
+### 一句话
+
+v7 = v6 + **零生成成本、零幻觉风险的纯导入增益**:把 v5 漏掉的、解对了的 LLM 散文 investigation 捞回来当 CoT,只留 `verify` 通过的,行数/格式与 v6 逐字一致。产物 `data/train_plus_synthetic_v7.csv`(22,300 行)+ `data/train_plus_synthetic_v7_report.json`,生成脚本 `scripts/build_v7_investigations.py`。
+
+### 缺口与思路(承上节 rule_unknown 实验的澄清)
+
+上节确认 `extern/nemotron/investigations/*.txt` 混着两类文件:~1,428 条 `investigators/*.py` 的**确定性暴搜一行输出**(`rule: … / predicted answer:`,无推理链),和 ~144 条**真·LLM 散文**(inferred rule → why it fits → step-by-step → predicted answer)。v5 的 import 只从**确定性 solver 轨迹** `reasoning/*.txt` 取 CoT(boxed==gold 才留);对 `status == hypothesis_formed` 的官方行,solver 形成的是错/偏假设(如 default-1 填充),boxed≠gold 故被留成 answer-only——**但其中一部分行恰好另带一条解对了的 LLM 散文 investigation,被 v5 整批漏掉**。v7 专门把这批散文捞回来,与 rule_unknown 那条线互补(那条攻 solver+120B 都失手的 918 行,诚实产量极低;这条捡 v5 已有却没采的散文,纯导入)。
+
+### 导入规则(`scripts/build_v7_investigations.py`)
+
+对 v6 中 `source==official_train`、`family∈{bit_manipulation, equation_symbol_transformation}`、`status==hypothesis_formed` 且当前 answer-only 的行,读 `investigations/<id>.txt`,**仅当**两条都满足才导入:
+
+1. **是真散文**:带 reasoning-section marker(`inferred rule / step-by-step / mapping: / …`)且 ≥2 非空行,以此与一行暴搜文件区分(该 marker 判据经 ≥120 字符 body cutoff 在全部 hypothesis_formed 文件上逐一对齐:100 真散文 = 13 bit + 87 eq,112 暴搜文件被丢)。
+2. **答案对得上**:其 `predicted answer:` 经 `official_metric.verify` 对上本地 gold(承接 v5/v6 既有安全纪律——自信的错 CoT 比没有更糟)。
+
+CoT 清洗:保留 `examples:` 块到 `predicted answer:`/`confidence` 尾**之间**的推理主体(inferred rule / mapping / step-by-step,内部小标题各异但都留),**剥掉 predicted-answer 行与对冲性 confidence 尾、中和任何 `\boxed`**,使 `<think>` 块内不出现竞争 boxed,train_sft.py 仍只有一个 canonical final-answer 目标。
+
+### 结果(`data/train_plus_synthetic_v7_report.json`)
+
+过滤明细:`hypothesis_formed_seen 213 → investigation_imported 75`(bit 11 + equation 64);`skipped_wrong_answer 26`(散文解错,verify 不过);`skipped_terse_searcher 112`(一行暴搜文件,无推理链,导入即 `query: 10101101` 之类垃圾)。
+
+| 信号 | v6 | v7 | Δ |
+| --- | ---: | ---: | ---: |
+| bit_manipulation CoT | 4,864 | **4,875** | +11 |
+| equation_symbol_transformation CoT | 4,466 | **4,530** | +64 |
+| 整体带 CoT | 21,173 | **21,248** | +75 |
+| 整体 CoT 覆盖率 | 94.95% | **95.28%** | +0.33pp |
+| 剩余 answer-only | 1,127 | **1,052** | −75 |
+
+剩余的 1,052 answer-only 几乎全是 `rule_unknown` cryptarithm——上节已用 agent 暴搜证明其**本质欠定**(gold 用了样例未揭示的运算),故**继续维持 answer-only,不为凑数注入会判错的 CoT**。总行数仍 22,300,列与格式(`boxed` 已中和)与 v6 逐字兼容,可直接喂现有 `train_sft.py`。
 
 ## Planned bit/equation repair: solver-guided CoT v5 (2026-06-05 17:36 CST)
 
@@ -604,3 +683,5 @@ Validation results:
 | 2026-06-06 08:42 CST | Added `EVAL_BASE_ONLY` official-rows-only val split: `train_sft.split_train_val` (val = 947 official rows, all synthetic → train), `eval_adapter.py` switched to it (prints `EVAL_BASE_ONLY`/`BASE_SOURCE`), new `scripts/eval_v5_latest_baseonly.sh` (2-shard GPU5/6). |
 | 2026-06-06 08:42 CST | Fast vLLM eval pipeline added & verified (separate effort): isolated `.venv-vllm` (vllm 0.22.1), `scripts/vllm_eval_full.sh` 3-stage (build → gen → score), full 947 official val ~12 min vs hours. H100 fix `CUDA_HOME=/usr/local/cuda-13.1 TORCH_CUDA_ARCH_LIST=9.0a`. vLLM applies the Mamba+MoE LoRA faithfully (100% boxed-sample agreement vs HF/PEFT on 32 rows). Honors `INFERENCE_FINAL_ANSWER_PREFILL`. |
 | 2026-06-06 08:42 CST | Decided against a dedicated CoT-vs-answer-only inference A/B: v5 already trains `prefill=1` / evals `prefill=0`, so CoT-at-inference is the configured mode and its rising eval curve is the CoT result. Removed the speculative A/B scaffolding (`scripts/ab_cot_*`). |
+| 2026-06-06 23:20 CST | rule_unknown CoT 生成实验启动:`scripts/gather_rule_unknown.py` 抽出 918 个 rule_unknown 缺口(801 eq + 117 bit;`data/rule_unknown_problems.jsonl`),`scripts/split_ru_problems.py` 拆成 per-id prompt 文件 + 干净索引,`scripts/extract_ru_results.py` 从工作流 transcript 提取结构化 CoT 并过 `official_metric.verify`。用 Opus-4.8 多 agent 按 Nemotron investigation 风格生成 CoT、gold 不可见、欠定即 can_solve=false。Smoke(均衡 12 题)= **4/11**(eq_numeric_deduce 2/2,bit 1/3,cryptarithm 1/4,eq_numeric_guess 0/2;cryptarithm 失败经 agent 暴搜证明为真欠定而非 prompt bug)。粗外推全量诚实可解 ~130/918 上限、主力在 eq_numeric。教训:单 agent 会手工暴搜 30–45min 拖垮 barrier,全量须切 pipeline + 暴搜超时即弃。详见上方同名小节。 |
+| 2026-06-07 09:31 CST | 构建 v7 数据集 `data/train_plus_synthetic_v7.csv`(脚本 `scripts/build_v7_investigations.py`):导入 v5 solver-only import 漏掉的真·LLM 散文 `hypothesis_formed` investigation(`extern/nemotron/investigations/*.txt`),仅当文件是真散文(非一行暴搜输出)且其 predicted answer 过 `official_metric.verify` 才留;`\boxed` 中和以保持 train_sft 单一 canonical 答案。213 seen 中导入 75(bit 11 + equation 64),跳过 26 答案错 + 112 暴搜文件。CoT 覆盖 `21,173→21,248`(`94.95%→95.28%`),行数/格式与 v6 一致(22,300 行);剩余 1,052 answer-only 为本质欠定的 rule_unknown cryptarithm,维持不注入。报告 `data/train_plus_synthetic_v7_report.json`。 |

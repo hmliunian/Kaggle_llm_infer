@@ -1,0 +1,12 @@
+In Alice's Wonderland, a secret bit manipulation rule transforms 8-bit binary numbers. The transformation involves operations like bit shifts, rotations, XOR, AND, OR, NOT, and possibly majority or choice functions.
+
+Here are some examples of input -> output:
+11010000 -> 01111101
+10011111 -> 11000111
+10110100 -> 11111111
+11111001 -> 00111110
+11110111 -> 10011101
+00010000 -> 01111111
+10100100 -> 01111011
+
+Now, determine the output for: 01111100

@@ -1,0 +1,7 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+20'20 = 0
+57'12 = 45
+49^50 = 99
+37)48 = 3748
+86'51 = 35
+Now, determine the result for: 48^79

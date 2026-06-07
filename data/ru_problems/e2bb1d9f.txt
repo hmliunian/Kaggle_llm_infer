@@ -1,0 +1,5 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+27-76 = 5
+19+88 = 081
+49+76 = 261
+Now, determine the result for: 03-94

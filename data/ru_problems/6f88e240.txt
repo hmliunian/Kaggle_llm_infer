@@ -1,0 +1,5 @@
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+06-41 = 47
+45)45 = 0
+41)12 = 7
+Now, determine the result for: 43<61
