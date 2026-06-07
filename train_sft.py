@@ -13,6 +13,7 @@ import random
 import shutil
 import itertools
 from contextlib import nullcontext
+from datetime import timedelta
 from pathlib import Path
 from collections import Counter, defaultdict
 
@@ -987,6 +988,15 @@ def evaluate(
         rng = random.Random(SEED)
         samples = rng.sample(samples, max_samples)
 
+    # Multi-GPU eval: every rank picks the SAME samples above (rng is seeded with a
+    # constant SEED), then each rank generates only its disjoint stride. Per-shard
+    # counts and records are all-gathered and merged below so every rank ends up
+    # with the identical global metrics. This halves eval wall-clock on 2 GPUs and
+    # avoids the rank-0-only pattern that left other ranks blocking in a collective
+    # past the NCCL watchdog timeout.
+    if IS_DISTRIBUTED and WORLD_SIZE > 1:
+        samples = samples[RANK::WORLD_SIZE]
+
     correct = 0
     total = 0
     family_correct = defaultdict(int)
@@ -1056,6 +1066,48 @@ def evaluate(
             }
         )
 
+    # Merge per-shard counts/records across ranks so every rank reports global
+    # metrics. all_gather_object is a collective: all ranks must reach it, which is
+    # why the training loop now calls evaluate() on every rank (no rank-0 guard).
+    if IS_DISTRIBUTED and WORLD_SIZE > 1:
+        def _sf_key(d):
+            return {f"{s}\t{fa}": v for (s, fa), v in d.items()}
+
+        local_stats = {
+            "correct": correct, "total": total, "boxed_count": boxed_count,
+            "family_correct": dict(family_correct), "family_total": dict(family_total),
+            "family_boxed": dict(family_boxed),
+            "source_correct": dict(source_correct), "source_total": dict(source_total),
+            "source_boxed": dict(source_boxed),
+            "source_family_correct": _sf_key(source_family_correct),
+            "source_family_total": _sf_key(source_family_total),
+            "source_family_boxed": _sf_key(source_family_boxed),
+            "eval_records": eval_records,
+        }
+        gathered = [None] * WORLD_SIZE
+        dist.all_gather_object(gathered, local_stats)
+
+        correct = total = boxed_count = 0
+        family_correct = defaultdict(int); family_total = defaultdict(int); family_boxed = defaultdict(int)
+        source_correct = defaultdict(int); source_total = defaultdict(int); source_boxed = defaultdict(int)
+        source_family_correct = defaultdict(int); source_family_total = defaultdict(int); source_family_boxed = defaultdict(int)
+        eval_records = []
+        for g in gathered:
+            correct += g["correct"]; total += g["total"]; boxed_count += g["boxed_count"]
+            for k, v in g["family_correct"].items(): family_correct[k] += v
+            for k, v in g["family_total"].items(): family_total[k] += v
+            for k, v in g["family_boxed"].items(): family_boxed[k] += v
+            for k, v in g["source_correct"].items(): source_correct[k] += v
+            for k, v in g["source_total"].items(): source_total[k] += v
+            for k, v in g["source_boxed"].items(): source_boxed[k] += v
+            for k, v in g["source_family_correct"].items():
+                s, fa = k.split("\t"); source_family_correct[(s, fa)] += v
+            for k, v in g["source_family_total"].items():
+                s, fa = k.split("\t"); source_family_total[(s, fa)] += v
+            for k, v in g["source_family_boxed"].items():
+                s, fa = k.split("\t"); source_family_boxed[(s, fa)] += v
+            eval_records.extend(g["eval_records"])
+
     acc = correct / max(total, 1)
     boxed_rate = boxed_count / max(total, 1)
     family_summary = {}
@@ -1110,7 +1162,7 @@ def evaluate(
             f"{metrics['accuracy']:.4f}, boxed={metrics['boxed_count']}/{metrics['total']}"
         )
 
-    if EVAL_SAVE_DETAILS:
+    if EVAL_SAVE_DETAILS and IS_MAIN_PROCESS:
         eval_dir = Path(EVAL_OUTPUT_DIR)
         eval_dir.mkdir(parents=True, exist_ok=True)
         stem = f"eval_{safe_eval_label(step_label)}"
@@ -1367,7 +1419,16 @@ def main():
     if IS_DISTRIBUTED:
         # Initialize DDP after PEFT adapter loading. Initializing torch.distributed
         # earlier makes PEFT try tensor-parallel adapter sharding on this stack.
-        dist.init_process_group(backend="nccl")
+        #
+        # Eval/generation runs only on rank 0 (see the training loop); non-main
+        # ranks block in the post-eval broadcast for the full eval duration. The
+        # default NCCL watchdog timeout is 600s, but a 48-sample generation eval
+        # can take ~15min and would abort the job. Use a generous timeout so the
+        # idle ranks wait through evaluation instead of timing out.
+        dist.init_process_group(
+            backend="nccl",
+            timeout=timedelta(hours=2),
+        )
         model = DistributedDataParallel(
             model,
             device_ids=[LOCAL_RANK],
@@ -1408,19 +1469,18 @@ def main():
     # Baseline eval (kept optional for smoke runs)
     if ENABLE_BASELINE_EVAL:
         log_main(f"\n[6.5/8] Baseline evaluation (before training) ...")
-        acc = 0.0
-        if IS_MAIN_PROCESS:
-            acc = evaluate(
-                unwrap_model(model),
-                tokenizer,
-                val_df,
-                max_samples=VAL_MAX_SAMPLES,
-                step_label="step=0 (baseline)",
-                max_new_tokens=EVAL_MAX_NEW_TOKENS,
-                wandb_logger=wandb_logger,
-                wandb_step=0,
-            )
-        acc = broadcast_float(acc, torch.device("cuda", LOCAL_RANK if IS_DISTRIBUTED else 0))
+        # All ranks evaluate (each generates a shard); evaluate() all-gathers the
+        # global metrics internally, so every rank returns the same acc.
+        acc = evaluate(
+            unwrap_model(model),
+            tokenizer,
+            val_df,
+            max_samples=VAL_MAX_SAMPLES,
+            step_label="step=0 (baseline)",
+            max_new_tokens=EVAL_MAX_NEW_TOKENS,
+            wandb_logger=wandb_logger,
+            wandb_step=0,
+        )
         barrier()
         model.train()
     else:
@@ -1537,17 +1597,16 @@ def main():
 
                 # Periodic evaluation
                 if global_step % EVAL_EVERY_STEPS == 0:
-                    acc = 0.0
-                    if IS_MAIN_PROCESS:
-                        acc = evaluate(
-                            unwrap_model(model), tokenizer, val_df,
-                            max_samples=VAL_MAX_SAMPLES,
-                            step_label=f"step={global_step}",
-                            max_new_tokens=EVAL_MAX_NEW_TOKENS,
-                            wandb_logger=wandb_logger,
-                            wandb_step=global_step,
-                        )
-                    acc = broadcast_float(acc, first_device)
+                    # All ranks evaluate disjoint shards; evaluate() all-gathers the
+                    # global acc, so no rank-0 guard / broadcast is needed.
+                    acc = evaluate(
+                        unwrap_model(model), tokenizer, val_df,
+                        max_samples=VAL_MAX_SAMPLES,
+                        step_label=f"step={global_step}",
+                        max_new_tokens=EVAL_MAX_NEW_TOKENS,
+                        wandb_logger=wandb_logger,
+                        wandb_step=global_step,
+                    )
                     barrier()
                     if acc > best_acc:
                         best_acc = acc
@@ -1609,17 +1668,15 @@ def main():
         # End-of-epoch evaluation
         if stop_training:
             break
-        acc = 0.0
-        if IS_MAIN_PROCESS:
-            acc = evaluate(
-                unwrap_model(model), tokenizer, val_df,
-                max_samples=VAL_MAX_SAMPLES,
-                step_label=f"epoch={epoch}, step={global_step}",
-                max_new_tokens=EVAL_MAX_NEW_TOKENS,
-                wandb_logger=wandb_logger,
-                wandb_step=global_step,
-            )
-        acc = broadcast_float(acc, torch.device("cuda", LOCAL_RANK if IS_DISTRIBUTED else 0))
+        # All ranks evaluate disjoint shards; evaluate() returns the global acc.
+        acc = evaluate(
+            unwrap_model(model), tokenizer, val_df,
+            max_samples=VAL_MAX_SAMPLES,
+            step_label=f"epoch={epoch}, step={global_step}",
+            max_new_tokens=EVAL_MAX_NEW_TOKENS,
+            wandb_logger=wandb_logger,
+            wandb_step=global_step,
+        )
         barrier()
         if acc > best_acc:
             best_acc = acc
