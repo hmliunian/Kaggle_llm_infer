@@ -1,0 +1,140 @@
+[0/8] Run config
+  SMOKE_MODE=True
+  DISTRIBUTED=False, WORLD_SIZE=1, RANK=0, LOCAL_RANK=0, GPU_ID=3
+  LORA_RANK=16, LORA_ALPHA=16, LORA_DROPOUT=0.05
+  MAX_SEQ_LEN=896, BATCH_SIZE=1, GRAD_ACCUM_STEPS=4
+  NUM_EPOCHS=1, MAX_TRAIN_STEPS=2, TRAIN_ROW_LIMIT=80
+  VAL_MAX_SAMPLES=2, EVAL_EVERY_STEPS=1, EVAL_MAX_NEW_TOKENS=128
+  EVAL_OUTPUT_DIR=/data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/eval
+  EVAL_SAVE_DETAILS=True
+  RESPONSE_ONLY_LOSS=True, TRAIN_FINAL_ANSWER_PREFILL=True, INFERENCE_FINAL_ANSWER_PREFILL=False, INFERENCE_STOP_AFTER_BOXED=True
+  OUTPUT_DIR=/data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/adapter
+  SUBMISSION_DIR=/data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/artifacts
+  CHECKPOINT_DIR=/data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/checkpoints
+  CHECKPOINT_EVERY_STEPS=1, KEEP_LAST_CHECKPOINTS=2
+  RESUME_FROM_CHECKPOINT=(none)
+  DISABLE_CUDNN_SDP=True, TRAIN_USE_CACHE=False
+  WANDB_ENABLED=False, WANDB_PROJECT=llm-infer-sft, WANDB_RUN_NAME=(auto)
+  WANDB_MODE=(default), WANDB_LOG_ARTIFACTS=False
+
+[1/8] Loading train.csv ...
+  CoT column present: 19748/21000 rows carry a CoT trace
+  Total rows: 21000
+  Task family distribution:
+    bit_manipulation: 4602
+    equation_symbol_transformation: 4555
+    gravity_formula: 4597
+    numeral_system: 2076
+    text_decryption: 3076
+    unit_conversion: 2094
+
+[2/8] Stratified train/val split (90%/10%) ...
+  Smoke train row limit applied: 80
+  Train: 80, Val: 2097
+  Val family distribution:
+    bit_manipulation: 460
+    equation_symbol_transformation: 455
+    gravity_formula: 459
+    numeral_system: 207
+    text_decryption: 307
+    unit_conversion: 209
+
+[3/8] Loading tokenizer from /data2/yaoxuran/models ...
+  Vocab size: 131072
+
+  Sample formatted text (first 800 chars):
+  <|im_start|>system
+You are a precise reasoning model. Infer the hidden rule from the examples and answer the final query. Always put only the final answer inside \boxed{}.<|im_end|>
+<|im_start|>user
+In Alice's Wonderland, a secret set of transformation rules is applied to equations. Below are a few examples:
+{\`` = +}]]
+/+:/)- = [-~[#\
+#~}% = )"*'
+$?@+ = /?&-
+Now, determine the result for: -#@<|im_end|>
+<|im_start|>assistant
+<think>
+Each symbol is replaced one-for-one by a fixed symbol (a substitution cipher). Read off the replacement for every symbol in the query from the examples: '-' appears in '/+:/)-' = '[-~[#\' at position 6, so '-' -> '\'. '#' appears in '#~}%' = ')"*'' at position 1, so '#' -> ')'. '@' appears in '$?@+' = '/?&-' at position 3, so '@' -> '&'. Apply this to the query
+
+[4/8] Loading model from /data2/yaoxuran/models ...
+Loading checkpoint shards:   0%|          | 0/13 [00:00<?, ?it/s]Loading checkpoint shards:   8%|▊         | 1/13 [00:01<00:22,  1.87s/it]Loading checkpoint shards:  15%|█▌        | 2/13 [00:03<00:20,  1.86s/it]Loading checkpoint shards:  23%|██▎       | 3/13 [00:05<00:18,  1.86s/it]Loading checkpoint shards:  31%|███       | 4/13 [00:07<00:16,  1.79s/it]Loading checkpoint shards:  38%|███▊      | 5/13 [00:09<00:14,  1.79s/it]Loading checkpoint shards:  46%|████▌     | 6/13 [00:10<00:12,  1.82s/it]Loading checkpoint shards:  54%|█████▍    | 7/13 [00:12<00:10,  1.83s/it]Loading checkpoint shards:  62%|██████▏   | 8/13 [00:14<00:09,  1.84s/it]Loading checkpoint shards:  69%|██████▉   | 9/13 [00:16<00:07,  1.81s/it]Loading checkpoint shards:  77%|███████▋  | 10/13 [00:18<00:05,  1.76s/it]Loading checkpoint shards:  85%|████████▍ | 11/13 [00:19<00:03,  1.72s/it]Loading checkpoint shards:  92%|█████████▏| 12/13 [00:21<00:01,  1.70s/it]Loading checkpoint shards: 100%|██████████| 13/13 [00:22<00:00,  1.51s/it]Loading checkpoint shards: 100%|██████████| 13/13 [00:22<00:00,  1.72s/it]
+  Model loaded.
+  Patched Nemotron-H generation cache compatibility.
+  Training model.config.use_cache=False
+
+[5/8] Attaching LoRA adapter (rank=16) ...
+trainable params: 440,069,120 || all params: 32,018,006,464 || trainable%: 1.3744
+
+[6/8] Preparing dataset ...
+
+[6.5/8] Baseline evaluation skipped by ENABLE_BASELINE_EVAL=0
+
+[7/8] Training ...
+  Gradient checkpointing disabled (to reduce overhead).
+  Total optimizer steps: 20, warmup: 1
+Epoch 0/1:   0%|          | 0/80 [00:00<?, ?it/s]You're using a PreTrainedTokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+Epoch 0/1:   1%|▏         | 1/80 [00:22<29:44, 22.59s/it]Epoch 0/1:   2%|▎         | 2/80 [00:28<16:39, 12.81s/it]Epoch 0/1:   4%|▍         | 3/80 [00:35<12:51, 10.02s/it]Epoch 0/1:   4%|▍         | 3/80 [00:42<12:51, 10.02s/it, loss=0.8664, lr=1.00e-04, step=1]
+Eval step=1:   0%|          | 0/2 [00:00<?, ?it/s][A
+Eval step=1:  50%|█████     | 1/2 [00:21<00:21, 21.81s/it][A
+Eval step=1: 100%|██████████| 2/2 [00:43<00:00, 21.51s/it][A
+                                                          [AEpoch 0/1:   5%|▌         | 4/80 [01:39<39:58, 31.56s/it, loss=0.8664, lr=1.00e-04, step=1]Epoch 0/1:   6%|▋         | 5/80 [01:45<27:42, 22.16s/it, loss=0.8664, lr=1.00e-04, step=1]Epoch 0/1:   8%|▊         | 6/80 [01:52<20:56, 16.98s/it, loss=0.8664, lr=1.00e-04, step=1]Epoch 0/1:   9%|▉         | 7/80 [01:57<16:01, 13.17s/it, loss=0.8664, lr=1.00e-04, step=1]Epoch 0/1:   9%|▉         | 7/80 [02:03<16:01, 13.17s/it, loss=0.9657, lr=9.93e-05, step=2]
+============================================================
+Evaluation @ step=1
+  Overall accuracy: 0/2 = 0.0000
+  Boxed answer rate: 0/2 = 0.0000
+  equation_symbol_transformation: 0/1 = 0.0000, boxed=0/1
+  gravity_formula: 0/1 = 0.0000, boxed=0/1
+  source=official_train: 0/2 = 0.0000, boxed=0/2
+  Eval details JSONL: /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/eval/eval_step-1.jsonl
+  Eval details CSV:   /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/eval/eval_step-1.csv
+  Eval summary JSON:  /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/eval/eval_step-1_summary.json
+============================================================
+
+  Saving training checkpoint to /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/checkpoints/checkpoint-000001 ...
+  Checkpoint saved: /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/checkpoints/checkpoint-000001
+
+Eval step=2:   0%|          | 0/2 [00:00<?, ?it/s][A
+Eval step=2:  50%|█████     | 1/2 [00:21<00:21, 21.28s/it][A
+Eval step=2: 100%|██████████| 2/2 [00:42<00:00, 21.29s/it][A
+                                                          [AEpoch 0/1:   9%|▉         | 7/80 [02:59<31:15, 25.70s/it, loss=0.9657, lr=9.93e-05, step=2]
+  adding: adapter_config.json (deflated 58%)
+  adding: adapter_model.safetensors (deflated 19%)
+
+============================================================
+Evaluation @ step=2
+  Overall accuracy: 0/2 = 0.0000
+  Boxed answer rate: 0/2 = 0.0000
+  equation_symbol_transformation: 0/1 = 0.0000, boxed=0/1
+  gravity_formula: 0/1 = 0.0000, boxed=0/1
+  source=official_train: 0/2 = 0.0000, boxed=0/2
+  Eval details JSONL: /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/eval/eval_step-2.jsonl
+  Eval details CSV:   /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/eval/eval_step-2.csv
+  Eval summary JSON:  /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/eval/eval_step-2_summary.json
+============================================================
+
+  Saving training checkpoint to /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/checkpoints/checkpoint-000002 ...
+  Checkpoint saved: /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/checkpoints/checkpoint-000002
+  Reached MAX_TRAIN_STEPS=2, stopping early.
+
+  Training complete. Total optimizer steps: 2
+  Best validation accuracy: 0.0000
+
+[8/8] Saving final adapter to /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/adapter ...
+  Using /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/adapter for submission (best checkpoint)
+  adapter_config.json: 1036 bytes
+  adapter_model.safetensors: 1762.1 MB
+  submission.zip: 1430.4 MB
+
+  submission.zip contents:
+Archive:  /data2/yaoxuran/llm_infer/runs/cot_v5_raw_smoke_gpu3/artifacts/submission.zip
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+     1036  2026-06-05 18:47   adapter_config.json
+1762066296  2026-06-05 18:47   adapter_model.safetensors
+---------                     -------
+1762067332                     2 files
+
+
+============================================================
+TRAINING COMPLETE — Best val accuracy: 0.0000
+============================================================

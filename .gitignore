@@ -28,7 +28,12 @@ __pycache__/
 checkpoints/
 eval/
 outputs/
-runs/
+# Keep run artifacts ignored, but allow v5 top-level training logs.
+runs/*
+!runs/
+!runs/*v5*/
+runs/*v5*/*
+!runs/*v5*/*.log
 logs/
 wandb/
 
